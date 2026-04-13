@@ -1,0 +1,21 @@
+{
+  "name": "mailfastapi",
+  "version": "1.0.0",
+  "description": "High-performance Node.js email microservice with pooled SMTP and async queue worker",
+  "main": "src/app.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/app.js",
+    "test": "node Tests/run-tests.js",
+    "test:mailsend": "node Tests/run-tests.js mailsend"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^8.0.5"
+  }
+}
