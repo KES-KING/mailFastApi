@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/app.js",
     "test": "node Tests/run-tests.js",
-    "test:mailsend": "node Tests/run-tests.js mailsend"
+    "test:mailsend": "node Tests/run-tests.js mailsend",
+    "log": "node scripts/log-cli.js",
+    "log:mailsender": "node scripts/log-cli.js mailsender"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -16,6 +18,7 @@
     "dotenv": "^16.5.0",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
-    "nodemailer": "^8.0.5"
+    "nodemailer": "^8.0.5",
+    "redis": "^4.7.1"
   }
 }

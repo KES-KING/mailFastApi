@@ -26,7 +26,7 @@ Tests/
 Responsibilities:
 
 - `run-tests.js`: translates CLI mode into env flags (ex: `MAILSEND_MODE=true`)
-- `helpers/server.js`: starts/stops isolated app process for integration tests
+- `helpers/server.js`: starts/stops isolated app process with dedicated per-test SQLite/log paths
 - `integration/api.integration.test.js`: API-level behavior, auth flow, mailsend checks
 - `unit/*.test.js`: fast deterministic module tests
 
@@ -41,6 +41,8 @@ npm test
 Behavior:
 
 - Uses isolated SMTP settings pointing to a non-real SMTP endpoint.
+- Forces `QUEUE_BACKEND=memory` for deterministic test execution without Redis dependency.
+- Uses isolated SQLite DB/log directories per test server instance.
 - Ensures contract behavior without external dependency.
 - Real-send scenario is skipped.
 

@@ -18,6 +18,12 @@ async function startTestServer(overrides = {}) {
   const env = {
     ...process.env,
     PORT: String(port),
+    QUEUE_BACKEND: "memory",
+    QUEUE_MAX_SIZE: "10000",
+    LOG_DB_PATH: `data/test-mailfastapi-${port}.sqlite`,
+    LOG_DIR: `logs/tests/${port}`,
+    LOG_FILE_NAME: "system.log",
+    LOG_FLUSH_INTERVAL_MS: "100",
     AUTH_MODE: "jwt",
     JWT_SECRET: "tests_super_secret_key_change_in_real_env",
     JWT_ISSUER: "mailFastApiTests",

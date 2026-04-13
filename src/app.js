@@ -7,22 +7,34 @@ const http = require("node:http");
 const express = require("express");
 
 const { getTransporter, closeTransporter, verifyTransporter } = require("./mailer");
-const { InMemoryQueue } = require("./queue");
 const { createWorker } = require("./worker");
 const { loadAuthConfig, authenticateClient, issueAccessToken, verifyJwt } = require("./auth");
+const { createSystemStore } = require("./systemStore");
+const { createSystemLogger } = require("./systemLogger");
+const { createMailQueue } = require("./mailQueueFactory");
 
 const PORT = toInt(process.env.PORT, 3000);
-const QUEUE_MAX_SIZE = toInt(process.env.QUEUE_MAX_SIZE, 50000);
 const WORKER_CONCURRENCY = toInt(process.env.WORKER_CONCURRENCY, 2);
 const RETRY_ATTEMPTS = Math.max(1, toInt(process.env.RETRY_ATTEMPTS, 3));
 const RETRY_DELAY_MS = Math.max(0, toInt(process.env.RETRY_DELAY_MS, 250));
 const SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.SHUTDOWN_TIMEOUT_MS, 20000));
 const MAIL_FROM =
   process.env.MAIL_FROM || process.env.SMTP_USER || "no-reply@mailfastapi.local";
+const SEND_SCOPE = "mail:send";
 
 const RATE_LIMIT_WINDOW_MS = Math.max(1000, toInt(process.env.RATE_LIMIT_WINDOW_MS, 60000));
 const RATE_LIMIT_MAX = Math.max(1, toInt(process.env.RATE_LIMIT_MAX, 120));
-const SEND_SCOPE = "mail:send";
+
+const QUEUE_BACKEND = String(process.env.QUEUE_BACKEND || "redis").trim().toLowerCase();
+const QUEUE_MAX_SIZE = Math.max(1, toInt(process.env.QUEUE_MAX_SIZE, 50000));
+const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const REDIS_QUEUE_KEY = process.env.REDIS_QUEUE_KEY || "mailfastapi:mail_jobs";
+const REDIS_COMMAND_TIMEOUT_MS = Math.max(1000, toInt(process.env.REDIS_COMMAND_TIMEOUT_MS, 5000));
+
+const LOG_DB_PATH = process.env.LOG_DB_PATH || "data/mailfastapi.sqlite";
+const LOG_DIR = process.env.LOG_DIR || "logs";
+const LOG_FILE_NAME = process.env.LOG_FILE_NAME || "system.log";
+const LOG_FLUSH_INTERVAL_MS = Math.max(100, toInt(process.env.LOG_FLUSH_INTERVAL_MS, 300));
 
 const authConfig = loadAuthConfig(process.env);
 
@@ -30,8 +42,23 @@ const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "100kb" }));
 
-const queue = new InMemoryQueue({ maxSize: QUEUE_MAX_SIZE });
 const transporter = getTransporter();
+const store = createSystemStore({ dbPath: LOG_DB_PATH });
+const logger = createSystemLogger({
+  store,
+  logDir: LOG_DIR,
+  logFileName: LOG_FILE_NAME,
+  flushIntervalMs: LOG_FLUSH_INTERVAL_MS,
+});
+
+const queue = createMailQueue({
+  backend: QUEUE_BACKEND,
+  maxSize: QUEUE_MAX_SIZE,
+  redisUrl: REDIS_URL,
+  queueKey: REDIS_QUEUE_KEY,
+  commandTimeoutMs: REDIS_COMMAND_TIMEOUT_MS,
+  logger,
+});
 
 const worker = createWorker({
   queue,
@@ -40,11 +67,8 @@ const worker = createWorker({
   concurrency: WORKER_CONCURRENCY,
   retryAttempts: RETRY_ATTEMPTS,
   retryDelayMs: RETRY_DELAY_MS,
-  logger: log,
+  logger: runtimeLog,
 });
-
-worker.start();
-verifyTransporter(log);
 
 app.use(createRateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX));
 
@@ -65,7 +89,7 @@ if (authConfig.mode === "jwt") {
       );
 
       if (!client) {
-        log("WARN", "auth token request denied", {
+        logger.warn("auth token request denied", {
           clientId: payload.clientId,
           ip: req.ip,
         });
@@ -73,7 +97,7 @@ if (authConfig.mode === "jwt") {
       }
 
       const tokenResponse = issueAccessToken(authConfig, client.clientId, client.scopes);
-      log("INFO", "auth token issued", {
+      logger.info("auth token issued", {
         clientId: client.clientId,
         scope: client.scopes.join(" "),
       });
@@ -83,35 +107,47 @@ if (authConfig.mode === "jwt") {
   );
 }
 
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    uptimeSec: Number(process.uptime().toFixed(2)),
-    queueDepth: queue.length,
-    activeJobs: worker.getActiveJobs(),
-    authMode: authConfig.mode,
-  });
+app.get("/health", async (req, res, next) => {
+  try {
+    const queueDepth = await queue.getDepth();
+    res.status(200).json({
+      status: "ok",
+      uptimeSec: Number(process.uptime().toFixed(2)),
+      queueDepth,
+      activeJobs: worker.getActiveJobs(),
+      authMode: authConfig.mode,
+      queueBackend: queue.backend,
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post("/send", createSendAuthMiddleware(authConfig), (req, res, next) => {
+app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) => {
   const validationError = validateSendPayload(req.body);
   if (validationError) {
     return res.status(400).json({ error: validationError });
   }
 
+  const traceId = req.header("x-request-id") || crypto.randomUUID();
   const jobId = crypto.randomUUID();
   const now = Date.now();
 
-  log("INFO", "request received", {
-    path: req.path,
-    method: req.method,
-    jobId,
-    to: req.body.to,
-    authSub: req.auth ? req.auth.sub : undefined,
-  });
+  logger.info(
+    "request received",
+    {
+      path: req.path,
+      method: req.method,
+      traceId,
+      jobId,
+      to: req.body.to,
+      authSub: req.auth ? req.auth.sub : undefined,
+    },
+    { traceId, source: "api" },
+  );
 
   try {
-    queue.enqueue({
+    await queue.enqueue({
       id: jobId,
       to: req.body.to.trim(),
       subject: req.body.subject.trim(),
@@ -120,13 +156,34 @@ app.post("/send", createSendAuthMiddleware(authConfig), (req, res, next) => {
     });
   } catch (error) {
     if (error && error.code === "QUEUE_FULL") {
-      log("ERROR", "mail queue full", { jobId, queueDepth: queue.length });
+      logger.error(
+        "mail queue full",
+        { traceId, jobId, queueBackend: queue.backend },
+        { traceId, source: "api" },
+      );
       return res.status(503).json({ error: "Queue is full. Try again later." });
     }
     return next(error);
   }
 
-  log("INFO", "mail queued", { jobId, queueDepth: queue.length });
+  let queueDepth;
+  try {
+    queueDepth = await queue.getDepth();
+  } catch (error) {
+    queueDepth = null;
+  }
+
+  logger.info(
+    "mail queued",
+    {
+      traceId,
+      jobId,
+      queueDepth,
+      queueBackend: queue.backend,
+    },
+    { traceId, source: "api" },
+  );
+
   return res.status(202).json({ status: "queued" });
 });
 
@@ -135,7 +192,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: "Invalid JSON payload." });
   }
 
-  log("ERROR", "internal error", {
+  logger.error("internal error", {
     message: err && err.message ? err.message : "Unknown error",
     stack: err && err.stack ? err.stack : undefined,
   });
@@ -144,16 +201,50 @@ app.use((err, req, res, next) => {
 });
 
 const server = http.createServer(app);
-server.listen(PORT, () => {
-  log("INFO", "mailFastApi started", {
-    port: PORT,
-    workerConcurrency: WORKER_CONCURRENCY,
-    queueMaxSize: QUEUE_MAX_SIZE,
-    authMode: authConfig.mode,
-  });
+let isShuttingDown = false;
+
+bootstrap().catch(async (error) => {
+  const message = error && error.message ? error.message : "Unknown startup error";
+  try {
+    logger.error("startup failed", { message });
+    await logger.close();
+  } catch (closeError) {
+    // noop
+  }
+  try {
+    store.close();
+  } catch (storeError) {
+    // noop
+  }
+  console.error(`[${new Date().toISOString()}] [ERROR] startup failed`, { message });
+  process.exit(1);
 });
 
-let isShuttingDown = false;
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+module.exports = { app };
+
+async function bootstrap() {
+  await logger.start();
+  await queue.start();
+
+  worker.start();
+  verifyTransporter(runtimeLog);
+
+  server.listen(PORT, () => {
+    logger.info("mailFastApi started", {
+      port: PORT,
+      workerConcurrency: WORKER_CONCURRENCY,
+      authMode: authConfig.mode,
+      queueBackend: queue.backend,
+      queueMaxSize: QUEUE_MAX_SIZE,
+      redisQueueKey: queue.backend === "redis" ? REDIS_QUEUE_KEY : undefined,
+      logFilePath: logger.getLogFilePath(),
+      logDbPath: store.getDbPath(),
+    });
+  });
+}
 
 async function gracefulShutdown(signal) {
   if (isShuttingDown) {
@@ -161,10 +252,10 @@ async function gracefulShutdown(signal) {
   }
   isShuttingDown = true;
 
-  log("INFO", "shutdown started", { signal });
+  logger.info("shutdown started", { signal });
 
   const forceExit = setTimeout(() => {
-    log("ERROR", "forced shutdown", { reason: "shutdown timeout reached" });
+    logger.error("forced shutdown", { reason: "shutdown timeout reached" });
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS);
   forceExit.unref();
@@ -172,19 +263,32 @@ async function gracefulShutdown(signal) {
   try {
     await closeServer(server);
     await worker.stop({ drainTimeoutMs: SHUTDOWN_TIMEOUT_MS });
+    await queue.stop();
     await closeTransporter();
-    log("INFO", "shutdown complete");
+    await logger.close();
+    store.close();
     process.exit(0);
   } catch (error) {
-    log("ERROR", "shutdown failed", {
+    logger.error("shutdown failed", {
       message: error && error.message ? error.message : "Unknown shutdown error",
     });
+    try {
+      await logger.close();
+    } catch (closeError) {
+      // noop
+    }
+    try {
+      store.close();
+    } catch (storeError) {
+      // noop
+    }
     process.exit(1);
   }
 }
 
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+function runtimeLog(level, event, details) {
+  logger.log(level, event, details, { source: "runtime" });
+}
 
 function createSendAuthMiddleware(config) {
   if (config.mode === "none") {
@@ -284,11 +388,6 @@ function createRateLimiter(windowMs, maxRequests) {
   };
 }
 
-function toInt(value, fallback) {
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
 function closeServer(instance) {
   return new Promise((resolve, reject) => {
     instance.close((error) => {
@@ -301,10 +400,7 @@ function closeServer(instance) {
   });
 }
 
-function log(level, message, meta) {
-  const timestamp = new Date().toISOString();
-  const details = meta ? ` ${JSON.stringify(meta)}` : "";
-  console.log(`[${timestamp}] [${level}] ${message}${details}`);
+function toInt(value, fallback) {
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
-
-module.exports = { app };
