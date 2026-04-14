@@ -21,6 +21,12 @@ const SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.SHUTDOWN_TIMEOUT_MS
 const MAIL_FROM =
   process.env.MAIL_FROM || process.env.SMTP_USER || "no-reply@mailfastapi.local";
 const SEND_SCOPE = "mail:send";
+const REQUEST_BODY_LIMIT = String(process.env.REQUEST_BODY_LIMIT || "10mb").trim() || "10mb";
+const MAX_ATTACHMENTS = Math.max(0, toInt(process.env.MAX_ATTACHMENTS, 10));
+const MAX_ATTACHMENT_TOTAL_BYTES = Math.max(
+  0,
+  toInt(process.env.MAX_ATTACHMENT_TOTAL_BYTES, 8 * 1024 * 1024),
+);
 
 const RATE_LIMIT_WINDOW_MS = Math.max(1000, toInt(process.env.RATE_LIMIT_WINDOW_MS, 60000));
 const RATE_LIMIT_MAX = Math.max(1, toInt(process.env.RATE_LIMIT_MAX, 120));
@@ -40,7 +46,7 @@ const authConfig = loadAuthConfig(process.env);
 
 const app = express();
 app.disable("x-powered-by");
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 
 const transporter = getTransporter();
 const store = createSystemStore({ dbPath: LOG_DB_PATH });
@@ -124,9 +130,9 @@ app.get("/health", async (req, res, next) => {
 });
 
 app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) => {
-  const validationError = validateSendPayload(req.body);
-  if (validationError) {
-    return res.status(400).json({ error: validationError });
+  const { error: validationError, payload: normalizedPayload } = validateSendPayload(req.body);
+  if (validationError || !normalizedPayload) {
+    return res.status(400).json({ error: validationError || "Invalid payload." });
   }
 
   const traceId = req.header("x-request-id") || crypto.randomUUID();
@@ -140,7 +146,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       method: req.method,
       traceId,
       jobId,
-      to: req.body.to,
+      to: normalizedPayload.to,
       authSub: req.auth ? req.auth.sub : undefined,
     },
     { traceId, source: "api" },
@@ -149,9 +155,12 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   try {
     await queue.enqueue({
       id: jobId,
-      to: req.body.to.trim(),
-      subject: req.body.subject.trim(),
-      html: req.body.html,
+      to: normalizedPayload.to,
+      from: normalizedPayload.from || undefined,
+      subject: normalizedPayload.subject,
+      html: normalizedPayload.html,
+      text: normalizedPayload.text || undefined,
+      attachments: normalizedPayload.attachments || undefined,
       queuedAt: now,
     });
   } catch (error) {
@@ -331,30 +340,175 @@ function createSendAuthMiddleware(config) {
 
 function validateSendPayload(body) {
   if (!body || typeof body !== "object") {
-    return "Request body must be a JSON object.";
+    return { error: "Request body must be a JSON object." };
   }
 
-  if (typeof body.to !== "string" || body.to.trim() === "") {
-    return "`to` is required.";
+  const recipients = normalizeRecipients(body.to);
+  if (!recipients || recipients.length === 0) {
+    return { error: "`to` is required." };
   }
 
-  if (!isValidEmail(body.to.trim())) {
-    return "`to` must be a valid email address.";
+  if (!recipients.every(isValidEmail)) {
+    return { error: "`to` must be a valid email address (string or list)." };
   }
 
   if (typeof body.subject !== "string" || body.subject.trim() === "") {
-    return "`subject` is required.";
+    return { error: "`subject` is required." };
   }
 
   if (typeof body.html !== "string" || body.html.trim() === "") {
-    return "`html` is required.";
+    return { error: "`html` is required." };
+  }
+
+  let from;
+  if (body.from !== undefined) {
+    if (typeof body.from !== "string" || body.from.trim() === "") {
+      return { error: "`from` must be a non-empty string when provided." };
+    }
+    from = body.from.trim();
+  }
+
+  let text;
+  if (body.text !== undefined) {
+    if (typeof body.text !== "string") {
+      return { error: "`text` must be a string when provided." };
+    }
+    text = body.text;
+  }
+
+  const attachmentResult = normalizeAttachments(body.attachments);
+  if (attachmentResult.error) {
+    return { error: attachmentResult.error };
+  }
+
+  return {
+    error: null,
+    payload: {
+      to: recipients.length === 1 ? recipients[0] : recipients,
+      from,
+      subject: body.subject.trim(),
+      html: body.html,
+      text,
+      attachments: attachmentResult.attachments,
+    },
+  };
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function normalizeRecipients(value) {
+  if (typeof value === "string") {
+    const parts = value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return parts.length > 0 ? parts : null;
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+    return parts.length > 0 ? parts : null;
   }
 
   return null;
 }
 
-function isValidEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+function normalizeAttachments(value) {
+  if (value === undefined) {
+    return { attachments: undefined, error: null };
+  }
+
+  if (!Array.isArray(value)) {
+    return { attachments: undefined, error: "`attachments` must be an array when provided." };
+  }
+
+  if (value.length > MAX_ATTACHMENTS) {
+    return {
+      attachments: undefined,
+      error: `Maximum ${MAX_ATTACHMENTS} attachments are allowed.`,
+    };
+  }
+
+  const attachments = [];
+  let totalBytes = 0;
+
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      return { attachments: undefined, error: "Each attachment must be an object." };
+    }
+
+    const filename = typeof item.filename === "string" ? item.filename.trim() : "";
+    const content = typeof item.content === "string" ? item.content.trim() : "";
+    const contentId = typeof item.content_id === "string" ? item.content_id.trim() : "";
+    const contentType =
+      typeof item.content_type === "string" ? item.content_type.trim() : "";
+
+    if (!filename || !content) {
+      return {
+        attachments: undefined,
+        error: "Attachment `filename` and `content` are required.",
+      };
+    }
+
+    if (!isValidBase64(content)) {
+      return {
+        attachments: undefined,
+        error: `Attachment content is not valid base64 (${filename}).`,
+      };
+    }
+
+    const rawBytes = Buffer.from(content.replace(/\s+/g, ""), "base64").length;
+    if (!Number.isFinite(rawBytes) || rawBytes <= 0) {
+      return {
+        attachments: undefined,
+        error: `Attachment content could not be decoded (${filename}).`,
+      };
+    }
+
+    totalBytes += rawBytes;
+    if (totalBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+      return {
+        attachments: undefined,
+        error: `Total attachment size exceeds ${MAX_ATTACHMENT_TOTAL_BYTES} bytes.`,
+      };
+    }
+
+    const normalized = {
+      filename,
+      content: content.replace(/\s+/g, ""),
+    };
+
+    if (contentId) {
+      normalized.content_id = contentId;
+    }
+    if (contentType) {
+      normalized.content_type = contentType;
+    }
+
+    attachments.push(normalized);
+  }
+
+  return {
+    attachments: attachments.length > 0 ? attachments : undefined,
+    error: null,
+  };
+}
+
+function isValidBase64(value) {
+  if (typeof value !== "string") return false;
+  const compact = value.replace(/\s+/g, "");
+  if (compact.length === 0 || compact.length % 4 !== 0) return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) return false;
+  try {
+    const decoded = Buffer.from(compact, "base64");
+    return decoded.length > 0;
+  } catch (error) {
+    return false;
+  }
 }
 
 function createRateLimiter(windowMs, maxRequests) {

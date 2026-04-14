@@ -20,6 +20,7 @@ Client -> POST /send -> Auth + Validate -> Redis Queue -> Worker -> SMTP Pool ->
 - Fast ACK pattern (`202 queued`) without waiting SMTP round-trip
 - Redis-backed mail queue (`QUEUE_BACKEND=redis`)
 - Global singleton Nodemailer pooled transporter
+- Optional per-mail `from`, multi-recipient `to`, and base64 attachments
 - Worker retry logic and latency metrics (`queueLatencyMs`, `dispatchLatencyMs`)
 - JWT auth (`/auth/token` + Bearer on `/send`) and rate limiting
 - Dual log persistence:
@@ -69,6 +70,10 @@ Important variables:
   - `LOG_FILE_NAME=system.log`
 - SMTP:
   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE`
+- Send payload controls:
+  - `REQUEST_BODY_LIMIT` (default `10mb`)
+  - `MAX_ATTACHMENTS` (default `10`)
+  - `MAX_ATTACHMENT_TOTAL_BYTES` (default `8388608`)
 
 ## Run
 

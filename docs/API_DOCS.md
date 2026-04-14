@@ -64,9 +64,25 @@ Request:
 {
   "to": "user@example.com",
   "subject": "Test Mail",
-  "html": "<h1>Hello</h1>"
+  "html": "<h1>Hello</h1>",
+  "from": "Bookings <reservations@example.com>",
+  "text": "Hello",
+  "attachments": [
+    {
+      "filename": "invoice.pdf",
+      "content": "<BASE64>",
+      "content_type": "application/pdf"
+    }
+  ]
 }
 ```
+
+Notes:
+
+- `to` can be either a string (`"a@x.com"` or `"a@x.com,b@y.com"`) or an array (`["a@x.com","b@y.com"]`).
+- `from`, `text`, and `attachments` are optional.
+- `attachments[].content` must be base64.
+- Inline attachments are supported via `attachments[].content_id` (mapped to SMTP `cid`).
 
 Success `202`:
 
