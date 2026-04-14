@@ -79,6 +79,31 @@ npm start
 
 Default URL: `http://localhost:3000`
 
+## Linux Auto Install (systemd service)
+
+Project root includes `install.sh` to install dependencies, set up Redis, install npm packages, and register `mailFastApi` as a background Linux service.
+During setup, installer converts `.env.example` into `.env` and asks each variable interactively.
+Press `Enter` to keep the shown default value.
+
+Run:
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+Common options:
+
+```bash
+./install.sh --service-name mailfastapi
+./install.sh --service-user mailer
+./install.sh --app-dir /opt/mailFastApi
+./install.sh --skip-system-deps
+./install.sh --skip-service
+```
+
+Installer output includes a colored ASCII banner and detailed step-by-step install logs.
+
 ## Tests
 
 ```bash

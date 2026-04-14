@@ -2,7 +2,9 @@
 
 const { spawn } = require("node:child_process");
 
-const isMailSendMode = process.argv.slice(2).some((arg) => String(arg).toLowerCase() === "mailsend");
+const isMailSendMode = process.argv
+  .slice(2)
+  .some((arg) => ["mailsend", "mailsender"].includes(String(arg).toLowerCase()));
 
 const env = {
   ...process.env,

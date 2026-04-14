@@ -122,6 +122,37 @@ CLI dashboard:
 npm run log mailsender
 ```
 
+## Linux Service Deployment
+
+For production-like deployment on Linux, use root-level installer:
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+Installer behavior for environment config:
+
+- reads `.env.example`
+- creates/updates `.env`
+- prompts each key interactively
+- `Enter` accepts default value shown in prompt
+
+Installer capabilities:
+
+- installs OS dependencies (curl, build toolchain, sqlite, redis)
+- installs Node.js LTS (>=20) if needed
+- ensures Redis service is enabled and running
+- installs npm dependencies in project directory
+- creates and enables systemd unit (`mailfastapi.service` by default)
+
+Post-install useful commands:
+
+```bash
+sudo systemctl status mailfastapi
+sudo journalctl -u mailfastapi -f
+```
+
 ## cURL Examples
 
 Token:
