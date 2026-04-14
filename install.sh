@@ -48,7 +48,6 @@ print_banner() {
 |_|  |_|\__,_|_|_|_|  \__,_|\___|\__/_/   \_\_|   |_|
 EOF
   echo -e "${RESET}${MAGENTA}Linux Auto Installer${RESET}"
-   echo -e "${RESET}${MAGENTA}https://github.com/KES-KING${RESET}"
   echo ""
 }
 
@@ -246,18 +245,15 @@ ensure_redis_running() {
 
   info "Ensuring Redis service is enabled and running..."
   local redis_service=""
-  if systemctl list-unit-files | grep -q '^redis-server\.service'; then
-    redis_service="redis-server"
-  elif systemctl list-unit-files | grep -q '^redis\.service'; then
-    redis_service="redis"
-  else
-    warn "Redis systemd unit not found. Redis may be installed under a different unit name."
-    warn "Please ensure Redis is running and update REDIS_URL in .env if needed."
-    return
-  fi
+  for redis_service in redis-server redis; do
+    if ${SUDO} systemctl enable --now "${redis_service}.service" >/dev/null 2>&1; then
+      ok "Redis service active: ${redis_service}.service"
+      return
+    fi
+  done
 
-  ${SUDO} systemctl enable --now "${redis_service}.service"
-  ok "Redis service active: ${redis_service}.service"
+  warn "Redis systemd unit not found or could not be started automatically."
+  warn "Please ensure Redis is running and update REDIS_URL in .env if needed."
 }
 
 is_secret_key() {
@@ -308,16 +304,20 @@ prompt_env_value() {
 
   if is_secret_key "${key}"; then
     if [[ -n "${default_value}" ]]; then
-      read -r -s -p "${prompt_label} [varsayilan: gizli, Enter mevcutu korur]: " input_value < /dev/tty
+      printf "%s" "${prompt_label} [varsayilan: gizli, Enter mevcutu korur]: " > /dev/tty
+      read -r -s input_value < /dev/tty
     else
-      read -r -s -p "${prompt_label} [varsayilan: bos]: " input_value < /dev/tty
+      printf "%s" "${prompt_label} [varsayilan: bos]: " > /dev/tty
+      read -r -s input_value < /dev/tty
     fi
     printf '\n' > /dev/tty
   else
     if [[ -n "${default_value}" ]]; then
-      read -r -p "${prompt_label} [varsayilan: ${default_value}]: " input_value < /dev/tty
+      printf "%s" "${prompt_label} [varsayilan: ${default_value}]: " > /dev/tty
+      read -r input_value < /dev/tty
     else
-      read -r -p "${prompt_label} [varsayilan: bos]: " input_value < /dev/tty
+      printf "%s" "${prompt_label} [varsayilan: bos]: " > /dev/tty
+      read -r input_value < /dev/tty
     fi
   fi
 
@@ -382,7 +382,8 @@ ask_env_configuration_preference() {
     return
   fi
 
-  read -r -p ".env dosyasini simdi duzenlemek ister misiniz? [y/N]: " choice < /dev/tty
+  printf "%s" ".env dosyasini simdi duzenlemek ister misiniz? [y/N]: " > /dev/tty
+  read -r choice < /dev/tty
   case "${choice}" in
     y|Y|yes|YES|Yes|e|E|evet|EVET|Evet)
       SHOULD_CONFIGURE_ENV="true"
@@ -437,7 +438,8 @@ configure_env_file() {
 
   if [[ -f "${env_path}" ]] && has_interactive_tty; then
     local overwrite_choice=""
-    read -r -p ".env already exists. Reconfigure from ${ENV_TEMPLATE_FILE}? [Y/n]: " overwrite_choice < /dev/tty
+    printf "%s" ".env already exists. Reconfigure from ${ENV_TEMPLATE_FILE}? [Y/n]: " > /dev/tty
+    read -r overwrite_choice < /dev/tty
     if [[ "${overwrite_choice}" =~ ^[Nn]$ ]]; then
       info "Keeping existing .env file."
       return
@@ -483,14 +485,36 @@ configure_env_file() {
   ok ".env is ready at ${env_path}"
 }
 
-run_npm_install() {
-  info "Installing Node.js dependencies (npm install)..."
+run_as_service_user() {
+  local cmd="$1"
 
   if [[ "$(id -un)" == "${SERVICE_USER}" ]]; then
-    (cd "${APP_DIR}" && npm install)
-  else
-    ${SUDO} -u "${SERVICE_USER}" -H bash -lc "cd '${APP_DIR}' && npm install"
+    bash -lc "${cmd}"
+    return
   fi
+
+  if [[ -n "${SUDO}" ]]; then
+    ${SUDO} -u "${SERVICE_USER}" -H bash -lc "${cmd}"
+    return
+  fi
+
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "${SERVICE_USER}" -- bash -lc "${cmd}"
+    return
+  fi
+
+  if command -v su >/dev/null 2>&1; then
+    su -s /bin/bash "${SERVICE_USER}" -c "${cmd}"
+    return
+  fi
+
+  err "Cannot switch to service user ${SERVICE_USER}. sudo/runuser/su not available."
+  exit 1
+}
+
+run_npm_install() {
+  info "Installing Node.js dependencies (npm install)..."
+  run_as_service_user "cd '${APP_DIR}' && npm install"
 
   ok "npm dependencies installed."
 }
