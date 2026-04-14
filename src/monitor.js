@@ -249,8 +249,8 @@ function renderMonitorPageHtml(options = {}) {
   const rawViewPath = escapeHtml(options.rawViewPath || "/monitor/raw-view");
   const logoPath = escapeHtml(options.logoPath || "/monitor/assets/logo.webp");
   const helpUrl = escapeHtml(options.helpUrl || "https://github.com/KES-KING/mailFastApi");
-  const updateCheckPath = escapeHtml(options.updateCheckPath || "");
-  const updateApplyPath = escapeHtml(options.updateApplyPath || "");
+  const updateCheckPath = escapeHtml(options.updateCheckPath || "/monitor/update/check");
+  const updateApplyPath = escapeHtml(options.updateApplyPath || "/monitor/update/apply");
 
   return `<!doctype html>
 <html lang="en">
@@ -674,7 +674,6 @@ function renderMonitorPageHtml(options = {}) {
         <span id="conn-text">Connecting stream...</span>
         <span id="updated">Updated: -</span>
       </div>
-      <button id="check-update-btn" type="button" class="action-btn">Guncellemeleri Denetle</button>
       <a
         class="help-link"
         href="${helpUrl}"
@@ -683,6 +682,7 @@ function renderMonitorPageHtml(options = {}) {
         title="GitHub Help"
         aria-label="GitHub Help"
       >?</a>
+      <button id="check-update-btn" type="button" class="action-btn">Guncellemeleri Denetle</button>
     </div>
   </header>
 
@@ -826,13 +826,9 @@ function renderMonitorPageHtml(options = {}) {
       renderEvents((state.snapshot && state.snapshot.recent) || []);
     });
 
-    if (!updateCheckPath || !updateApplyPath) {
-      ids.checkUpdateBtn.style.display = "none";
-    } else {
-      ids.checkUpdateBtn.addEventListener("click", () => {
-        void checkForUpdates();
-      });
-    }
+    ids.checkUpdateBtn.addEventListener("click", () => {
+      void checkForUpdates();
+    });
 
     connectSse();
     refreshNow();
