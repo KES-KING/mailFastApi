@@ -193,58 +193,15 @@ node_major_version() {
   node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo "0"
 }
 
-service_user_node_major_version() {
-  if ! run_as_service_user "command -v node >/dev/null 2>&1"; then
-    echo "0"
-    return
-  fi
-  run_as_service_user "node -p \"process.versions.node.split('.')[0]\"" 2>/dev/null || echo "0"
-}
-
-service_user_has_npm() {
-  run_as_service_user "command -v npm >/dev/null 2>&1"
-}
-
-install_npm_package_if_needed() {
-  if service_user_has_npm; then
-    return
-  fi
-
-  warn "npm command is still missing for service user. Trying package-manager npm install..."
-  case "${PKG_MANAGER}" in
-    apt)
-      ${SUDO} apt-get install -y npm
-      ;;
-    dnf)
-      ${SUDO} dnf install -y npm
-      ;;
-    yum)
-      ${SUDO} yum install -y npm
-      ;;
-    pacman)
-      ${SUDO} pacman -Sy --noconfirm --needed npm
-      ;;
-    zypper)
-      ${SUDO} zypper --non-interactive install npm
-      ;;
-    *)
-      warn "Unsupported package manager for npm fallback install."
-      ;;
-  esac
-}
-
 install_node_lts_if_needed() {
   local major
-  local service_major
   major="$(node_major_version)"
-  service_major="$(service_user_node_major_version)"
-
-  if [[ "${major}" -ge 20 ]] && [[ "${service_major}" -ge 20 ]] && service_user_has_npm; then
-    ok "Node.js/npm are already suitable for installer and service user (>=20)."
+  if [[ "${major}" -ge 20 ]]; then
+    ok "Node.js version is already suitable (>=20)."
     return
   fi
 
-  info "Node.js/npm not fully available for service user. Installing Node.js LTS..."
+  info "Node.js >=20 not found, installing Node.js LTS..."
   case "${PKG_MANAGER}" in
     apt)
       curl -fsSL https://deb.nodesource.com/setup_22.x | ${SUDO} -E bash -
@@ -271,16 +228,12 @@ install_node_lts_if_needed() {
       ;;
   esac
 
-  install_npm_package_if_needed
-
   major="$(node_major_version)"
-  service_major="$(service_user_node_major_version)"
-  if [[ "${major}" -lt 20 ]] || [[ "${service_major}" -lt 20 ]] || ! service_user_has_npm; then
-    err "Node.js/npm installation did not complete successfully for service user."
-    err "Current user node major: ${major}, service user node major: ${service_major}"
+  if [[ "${major}" -lt 20 ]]; then
+    err "Node.js installation did not result in version >=20."
     exit 1
   fi
-  ok "Node.js/npm are ready for service user."
+  ok "Node.js installed successfully."
 }
 
 ensure_redis_running() {
@@ -561,11 +514,6 @@ run_as_service_user() {
 
 run_npm_install() {
   info "Installing Node.js dependencies (npm install)..."
-  if ! service_user_has_npm; then
-    err "npm command is not available for service user (${SERVICE_USER})."
-    err "Run installer without --skip-system-deps or install npm globally, then retry."
-    exit 1
-  fi
   run_as_service_user "cd '${APP_DIR}' && npm install"
 
   ok "npm dependencies installed."
@@ -607,9 +555,9 @@ StandardError=append:${APP_DIR}/logs/systemd.err.log
 WantedBy=multi-user.target
 EOF
 
-  ${SUDO} systemctl daemon-reload
-  ${SUDO} systemctl enable --now "${SERVICE_NAME}.service"
-  ok "Service enabled and started: ${SERVICE_NAME}.service"
+  ${SUDO} systemctl daemon-reload || warn "systemctl daemon-reload failed (expected in WSL without systemd)"
+  ${SUDO} systemctl enable --now "${SERVICE_NAME}.service" || warn "systemctl enable failed (expected in WSL without systemd)"
+  ok "Service configuration completed: ${SERVICE_NAME}.service"
 }
 
 print_post_install() {
@@ -663,10 +611,10 @@ main() {
 
   if [[ "${SKIP_SERVICE_SETUP}" != "true" ]]; then
     if ! command -v systemctl >/dev/null 2>&1; then
-      err "systemctl is not available. Cannot create Linux service automatically."
-      exit 1
+      warn "systemctl is not available. Cannot create Linux service automatically (Expected in WSL)."
+    else
+      create_systemd_service
     fi
-    create_systemd_service
   else
     warn "Skipping systemd service setup by request."
   fi
