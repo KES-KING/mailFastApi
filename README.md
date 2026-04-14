@@ -74,6 +74,10 @@ Important variables:
   - `REQUEST_BODY_LIMIT` (default `10mb`)
   - `MAX_ATTACHMENTS` (default `10`)
   - `MAX_ATTACHMENT_TOTAL_BYTES` (default `8388608`)
+- Live monitor:
+  - `MONITOR_ENABLED`, `MONITOR_PATH`, `METRICS_PATH`
+  - `MONITOR_SSE_INTERVAL_MS`, `MONITOR_TOKEN`
+  - `MONITOR_MAX_RECENT_ENTRIES`, `MONITOR_MAX_TIMELINE_MINUTES`
 
 ## Run
 
@@ -83,6 +87,10 @@ npm start
 ```
 
 Default URL: `http://localhost:3000`
+
+Live monitor URL (default): `http://localhost:3000/monitor`
+
+Prometheus metrics URL (default): `http://localhost:3000/metrics`
 
 ## Linux Auto Install (systemd service)
 

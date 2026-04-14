@@ -10,6 +10,7 @@ function createSystemLogger(options) {
     logFileName = "system.log",
     flushIntervalMs = 300,
     maxBufferedEntries = 10000,
+    onEntry,
   } = options;
 
   if (!store || typeof store.insertLogEntries !== "function") {
@@ -51,6 +52,16 @@ function createSystemLogger(options) {
           : null,
       createdAtMs: Date.now(),
     };
+
+    if (typeof onEntry === "function") {
+      try {
+        onEntry(entry);
+      } catch (error) {
+        console.error(`[${new Date().toISOString()}] [WARN] monitor onEntry callback failed`, {
+          message: error && error.message ? error.message : "Unknown onEntry error",
+        });
+      }
+    }
 
     if (state.buffer.length >= maxBufferedEntries) {
       state.buffer.shift();

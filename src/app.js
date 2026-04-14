@@ -12,6 +12,7 @@ const { loadAuthConfig, authenticateClient, issueAccessToken, verifyJwt } = requ
 const { createSystemStore } = require("./systemStore");
 const { createSystemLogger } = require("./systemLogger");
 const { createMailQueue } = require("./mailQueueFactory");
+const { createMonitor, renderMonitorPageHtml } = require("./monitor");
 
 const PORT = toInt(process.env.PORT, 3000);
 const WORKER_CONCURRENCY = toInt(process.env.WORKER_CONCURRENCY, 2);
@@ -41,8 +42,30 @@ const LOG_DB_PATH = process.env.LOG_DB_PATH || "data/mailfastapi.sqlite";
 const LOG_DIR = process.env.LOG_DIR || "logs";
 const LOG_FILE_NAME = process.env.LOG_FILE_NAME || "system.log";
 const LOG_FLUSH_INTERVAL_MS = Math.max(100, toInt(process.env.LOG_FLUSH_INTERVAL_MS, 300));
+const MONITOR_ENABLED = toBoolean(process.env.MONITOR_ENABLED, true);
+const MONITOR_PATH = normalizePath(process.env.MONITOR_PATH || "/monitor");
+const MONITOR_STATS_PATH = MONITOR_PATH === "/" ? "/stats" : `${MONITOR_PATH}/stats`;
+const MONITOR_STREAM_PATH = MONITOR_PATH === "/" ? "/stream" : `${MONITOR_PATH}/stream`;
+const METRICS_PATH = normalizePath(process.env.METRICS_PATH || "/metrics");
+const MONITOR_SSE_INTERVAL_MS = Math.max(
+  500,
+  toInt(process.env.MONITOR_SSE_INTERVAL_MS, 1000),
+);
+const MONITOR_TOKEN = String(process.env.MONITOR_TOKEN || "").trim();
+const MONITOR_MAX_RECENT_ENTRIES = Math.max(
+  50,
+  toInt(process.env.MONITOR_MAX_RECENT_ENTRIES, 400),
+);
+const MONITOR_MAX_TIMELINE_MINUTES = Math.max(
+  10,
+  toInt(process.env.MONITOR_MAX_TIMELINE_MINUTES, 180),
+);
 
 const authConfig = loadAuthConfig(process.env);
+const monitor = createMonitor({
+  maxRecentEntries: MONITOR_MAX_RECENT_ENTRIES,
+  maxTimelineMinutes: MONITOR_MAX_TIMELINE_MINUTES,
+});
 
 const app = express();
 app.disable("x-powered-by");
@@ -55,6 +78,9 @@ const logger = createSystemLogger({
   logDir: LOG_DIR,
   logFileName: LOG_FILE_NAME,
   flushIntervalMs: LOG_FLUSH_INTERVAL_MS,
+  onEntry: (entry) => {
+    monitor.ingestLogEntry(entry);
+  },
 });
 
 const queue = createMailQueue({
@@ -115,19 +141,102 @@ if (authConfig.mode === "jwt") {
 
 app.get("/health", async (req, res, next) => {
   try {
-    const queueDepth = await queue.getDepth();
+    const runtime = await collectRuntimeMetrics();
     res.status(200).json({
       status: "ok",
       uptimeSec: Number(process.uptime().toFixed(2)),
-      queueDepth,
-      activeJobs: worker.getActiveJobs(),
-      authMode: authConfig.mode,
-      queueBackend: queue.backend,
+      queueDepth: runtime.queueDepth,
+      activeJobs: runtime.activeJobs,
+      authMode: runtime.authMode,
+      queueBackend: runtime.queueBackend,
     });
   } catch (error) {
     next(error);
   }
 });
+
+if (MONITOR_ENABLED) {
+  const monitorAuth = createMonitorAuthMiddleware(MONITOR_TOKEN);
+
+  app.get(MONITOR_PATH, monitorAuth, (req, res) => {
+    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+    const html = renderMonitorPageHtml({
+      title: "mailFastApi Live Monitor",
+      statsPath: `${MONITOR_STATS_PATH}${suffix}`,
+      streamPath: `${MONITOR_STREAM_PATH}${suffix}`,
+      metricsPath: `${METRICS_PATH}${suffix}`,
+    });
+    res.status(200).type("html").send(html);
+  });
+
+  app.get(MONITOR_STATS_PATH, monitorAuth, async (req, res, next) => {
+    try {
+      const snapshot = await collectMonitorSnapshot();
+      res.status(200).json(snapshot);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(MONITOR_STREAM_PATH, monitorAuth, async (req, res, next) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") {
+      res.flushHeaders();
+    }
+
+    let closed = false;
+
+    const publishSnapshot = async () => {
+      if (closed) return;
+      const snapshot = await collectMonitorSnapshot();
+      sendSseEvent(res, "snapshot", snapshot);
+    };
+
+    try {
+      await publishSnapshot();
+    } catch (error) {
+      return next(error);
+    }
+
+    const snapshotTimer = setInterval(() => {
+      void publishSnapshot();
+    }, MONITOR_SSE_INTERVAL_MS);
+
+    const heartbeatTimer = setInterval(() => {
+      if (closed) return;
+      res.write(": ping\n\n");
+    }, 15000);
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(snapshotTimer);
+      clearInterval(heartbeatTimer);
+      try {
+        res.end();
+      } catch (error) {
+        // noop
+      }
+    };
+
+    req.on("close", cleanup);
+    req.on("error", cleanup);
+  });
+
+  app.get(METRICS_PATH, monitorAuth, async (req, res, next) => {
+    try {
+      const runtime = await collectRuntimeMetrics();
+      const text = monitor.toPrometheus(runtime);
+      res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+      res.status(200).send(text);
+    } catch (error) {
+      next(error);
+    }
+  });
+}
 
 app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) => {
   const { error: validationError, payload: normalizedPayload } = validateSendPayload(req.body);
@@ -297,6 +406,49 @@ async function gracefulShutdown(signal) {
 
 function runtimeLog(level, event, details) {
   logger.log(level, event, details, { source: "runtime" });
+}
+
+async function collectMonitorSnapshot() {
+  const runtime = await collectRuntimeMetrics();
+  return monitor.getSnapshot(runtime);
+}
+
+async function collectRuntimeMetrics() {
+  let queueDepth = null;
+  try {
+    queueDepth = await queue.getDepth();
+  } catch (error) {
+    queueDepth = null;
+  }
+
+  return {
+    queueDepth,
+    activeJobs: worker.getActiveJobs(),
+    authMode: authConfig.mode,
+    queueBackend: queue.backend,
+    port: PORT,
+  };
+}
+
+function createMonitorAuthMiddleware(requiredToken) {
+  if (!requiredToken) {
+    return (req, res, next) => next();
+  }
+
+  return (req, res, next) => {
+    const headerToken = req.header("x-monitor-token");
+    const queryToken = req.query && typeof req.query.token === "string" ? req.query.token : "";
+    const provided = headerToken || queryToken;
+    if (provided && safeEqualStrings(provided, requiredToken)) {
+      return next();
+    }
+    return res.status(401).json({ error: "Unauthorized monitor access." });
+  };
+}
+
+function sendSseEvent(res, eventName, payload) {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function createSendAuthMiddleware(config) {
@@ -557,4 +709,31 @@ function closeServer(instance) {
 function toInt(value, fallback) {
   const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizePath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "/";
+  const prefixed = raw.startsWith("/") ? raw : `/${raw}`;
+  if (prefixed.length > 1 && prefixed.endsWith("/")) {
+    return prefixed.slice(0, -1);
+  }
+  return prefixed;
+}
+
+function safeEqualStrings(left, right) {
+  const a = Buffer.from(String(left), "utf8");
+  const b = Buffer.from(String(right), "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }

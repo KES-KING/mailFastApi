@@ -26,6 +26,10 @@
 | `POST /auth/token` | enabled | not registered | not registered |
 | `POST /send` | bearer required | `x-api-key` required | open |
 | `GET /health` | public | public | public |
+| `GET /monitor*` | public* | public* | public* |
+| `GET /metrics` | public* | public* | public* |
+
+\* If `MONITOR_TOKEN` is set, monitor/metrics endpoints require `x-monitor-token` header (or `?token=` query).
 
 ## Endpoints
 
@@ -115,6 +119,20 @@ Success `200`:
   "queueBackend": "redis"
 }
 ```
+
+## GET `/monitor`
+
+- Built-in web dashboard (Prometheus-like live view) for:
+  - `/send` request traffic
+  - queue depth / active jobs
+  - mail queued/sent/failed counters
+  - recent events table (live)
+
+Related endpoints:
+
+- `GET /monitor/stats` -> JSON snapshot
+- `GET /monitor/stream` -> Server-Sent Events live snapshot stream
+- `GET /metrics` -> Prometheus text metrics
 
 ## Redis Queue Notes
 
