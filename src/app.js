@@ -49,6 +49,7 @@ const LOG_DIR = process.env.LOG_DIR || "logs";
 const LOG_FILE_NAME = process.env.LOG_FILE_NAME || "system.log";
 const LOG_FLUSH_INTERVAL_MS = Math.max(100, toInt(process.env.LOG_FLUSH_INTERVAL_MS, 300));
 const MONITOR_ENABLED = toBoolean(process.env.MONITOR_ENABLED, true);
+const MONITOR_UI_ENABLED = toBoolean(process.env.MONITOR_UI_ENABLED, false);
 const MONITOR_PATH = normalizePath(process.env.MONITOR_PATH || "/monitor");
 const MONITOR_STATS_PATH = MONITOR_PATH === "/" ? "/stats" : `${MONITOR_PATH}/stats`;
 const MONITOR_STREAM_PATH = MONITOR_PATH === "/" ? "/stream" : `${MONITOR_PATH}/stream`;
@@ -294,6 +295,7 @@ async function bootstrap() {
   logger.info("mailFastApi started", {
     port: PORT,
     monitorEnabled: MONITOR_ENABLED,
+    monitorUiEnabled: MONITOR_UI_ENABLED,
     monitorPath: MONITOR_PATH,
     monitorSeparatePort: MONITOR_SEPARATE_PORT,
     monitorPort: MONITOR_PORT,
@@ -359,52 +361,54 @@ function runtimeLog(level, event, details) {
 function registerMonitorRoutes(targetApp) {
   const monitorAuth = createMonitorAuthMiddleware(MONITOR_TOKEN);
 
-  targetApp.get(MONITOR_LOGO_ASSET_PATH, monitorAuth, (req, res, next) => {
-    res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
-    res.sendFile(MONITOR_LOGO_FILE_PATH, (error) => {
-      if (!error) {
-        return;
-      }
-      next(error);
+  if (MONITOR_UI_ENABLED) {
+    targetApp.get(MONITOR_LOGO_ASSET_PATH, monitorAuth, (req, res, next) => {
+      res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
+      res.sendFile(MONITOR_LOGO_FILE_PATH, (error) => {
+        if (!error) {
+          return;
+        }
+        next(error);
+      });
     });
-  });
 
-  targetApp.get(MONITOR_PATH, monitorAuth, (req, res) => {
-    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
-    const html = renderMonitorPageHtml({
-      title: "mailFastApi Live Monitor",
-      statsPath: `${MONITOR_STATS_PATH}${suffix}`,
-      streamPath: `${MONITOR_STREAM_PATH}${suffix}`,
-      metricsPath: `${METRICS_PATH}${suffix}`,
-      metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
-      rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
-      logoPath: `${MONITOR_LOGO_ASSET_PATH}${suffix}`,
-      helpUrl: MONITOR_HELP_URL,
+    targetApp.get(MONITOR_PATH, monitorAuth, (req, res) => {
+      const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+      const html = renderMonitorPageHtml({
+        title: "mailFastApi Live Monitor",
+        statsPath: `${MONITOR_STATS_PATH}${suffix}`,
+        streamPath: `${MONITOR_STREAM_PATH}${suffix}`,
+        metricsPath: `${METRICS_PATH}${suffix}`,
+        metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
+        rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
+        logoPath: `${MONITOR_LOGO_ASSET_PATH}${suffix}`,
+        helpUrl: MONITOR_HELP_URL,
+      });
+      res.status(200).type("html").send(html);
     });
-    res.status(200).type("html").send(html);
-  });
 
-  targetApp.get(MONITOR_METRICS_VIEW_PATH, monitorAuth, (req, res) => {
-    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
-    const html = renderMonitorMetricsPageHtml({
-      title: "mailFastApi Prometheus Metrics View",
-      metricsPath: `${METRICS_PATH}${suffix}`,
-      monitorPath: `${MONITOR_PATH}${suffix}`,
-      rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
+    targetApp.get(MONITOR_METRICS_VIEW_PATH, monitorAuth, (req, res) => {
+      const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+      const html = renderMonitorMetricsPageHtml({
+        title: "mailFastApi Prometheus Metrics View",
+        metricsPath: `${METRICS_PATH}${suffix}`,
+        monitorPath: `${MONITOR_PATH}${suffix}`,
+        rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
+      });
+      res.status(200).type("html").send(html);
     });
-    res.status(200).type("html").send(html);
-  });
 
-  targetApp.get(MONITOR_RAW_VIEW_PATH, monitorAuth, (req, res) => {
-    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
-    const html = renderMonitorRawPageHtml({
-      title: "mailFastApi Raw Snapshot View",
-      statsPath: `${MONITOR_STATS_PATH}${suffix}`,
-      monitorPath: `${MONITOR_PATH}${suffix}`,
-      metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
+    targetApp.get(MONITOR_RAW_VIEW_PATH, monitorAuth, (req, res) => {
+      const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+      const html = renderMonitorRawPageHtml({
+        title: "mailFastApi Raw Snapshot View",
+        statsPath: `${MONITOR_STATS_PATH}${suffix}`,
+        monitorPath: `${MONITOR_PATH}${suffix}`,
+        metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
+      });
+      res.status(200).type("html").send(html);
     });
-    res.status(200).type("html").send(html);
-  });
+  }
 
   targetApp.get(MONITOR_STATS_PATH, monitorAuth, async (req, res, next) => {
     try {

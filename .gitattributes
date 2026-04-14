@@ -1,1 +1,2 @@
 install.sh text eol=lf
+updater.sh text eol=lf

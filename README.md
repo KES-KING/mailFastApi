@@ -1,18 +1,21 @@
 # mailFastApi
 
-High-performance Node.js email microservice.
+High-performance Node.js email microservice with split core/web architecture.
 
 Core design:
 
 - Incoming email requests are written to Redis queue immediately.
 - Worker processes consume Redis jobs and deliver via pooled SMTP.
 - System logs are persisted to SQLite and file logs simultaneously.
+- Monitor web panel is served by a separate web service.
 
 ## Architecture
 
 ```text
-Client -> POST /send -> Auth + Validate -> Redis Queue -> Worker -> SMTP Pool -> Provider
-                                      \-> Structured Logger -> SQLite + File + Console
+Client -> Core API (/send, /auth/token, /health) -> Queue -> Worker -> SMTP Provider
+                                     \-> Structured Logger -> SQLite + File + Console
+Web Panel Service -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
+                 -> Update Control (updater.sh)
 ```
 
 ## Key Features
@@ -36,6 +39,7 @@ Client -> POST /send -> Auth + Validate -> Redis Queue -> Worker -> SMTP Pool ->
 mailFastApi/
 |-- src/
 |   |-- app.js
+|   |-- web.js
 |   |-- auth.js
 |   |-- mailQueueFactory.js
 |   |-- memoryMailQueue.js
@@ -50,6 +54,7 @@ mailFastApi/
 |-- docs/
 |   `-- API_DOCS.md
 |-- Tests/
+|-- updater.sh
 |-- .env.example
 `-- package.json
 ```
@@ -75,45 +80,49 @@ Important variables:
   - `MAX_ATTACHMENTS` (default `10`)
   - `MAX_ATTACHMENT_TOTAL_BYTES` (default `8388608`)
 - Live monitor:
-  - `MONITOR_ENABLED`, `MONITOR_PATH`, `METRICS_PATH`
-  - `MONITOR_HOST`, `MONITOR_PORT`
+  - Core service: `MONITOR_ENABLED`, `MONITOR_UI_ENABLED`, `MONITOR_PATH`, `METRICS_PATH`
   - `MONITOR_SSE_INTERVAL_MS`, `MONITOR_TOKEN`
   - `MONITOR_MAX_RECENT_ENTRIES`, `MONITOR_MAX_TIMELINE_MINUTES`
+- Web service:
+  - `WEB_PORT`, `WEB_HOST`, `WEB_CORE_BASE_URL`
+  - `WEB_ENABLE_UPDATER`, `WEB_UPDATE_SCRIPT`, `WEB_UPDATE_TIMEOUT_MS`
+  - `WEB_UPDATE_TOKEN` (optional extra protection for update endpoints)
 
 ## Run
 
 ```bash
 npm install
-npm start
+npm run start:core
+npm run start:web
 ```
 
-Default URL: `http://localhost:3000`
+Core URL (default): `http://localhost:3000`
 
-Live monitor URL (default): `http://localhost:3000/monitor`
+Web monitor URL (default): `http://localhost:3300/monitor`
 
-Prometheus metrics URL (default): `http://localhost:3000/metrics`
+Prometheus metrics URL (default): `http://localhost:3300/metrics`
 
 Formatted monitor pages:
 
 - Metrics view: `http://localhost:3000/monitor/metrics-view`
 - Raw snapshot view: `http://localhost:3000/monitor/raw-view`
 
-To run monitor on a dedicated port, set for example:
+## Linux Auto Install (dual systemd services)
 
-```bash
-PORT=3000
-MONITOR_PORT=3300
-```
+Project root includes `install.sh` to install dependencies, set up Redis, install npm packages, and register two background services:
 
-Then monitor/metrics endpoints are served from `http://localhost:3300`.
+- `mailfastapi-core.service`
+- `mailfastapi-web.service`
 
-## Linux Auto Install (systemd service)
+Installer also:
 
-Project root includes `install.sh` to install dependencies, set up Redis, install npm packages, and register `mailFastApi` as a background Linux service.
-During setup, installer converts `.env.example` into `.env` and asks each variable interactively.
-Press `Enter` to keep the shown default value.
+- creates/updates `.env` from `.env.example`
+- appends missing core/web settings
+- checks core/web ports
+- creates runtime directories and permissions
+- enables and starts both services
 
-Run:
+Run installer:
 
 ```bash
 chmod +x install.sh
@@ -123,14 +132,26 @@ chmod +x install.sh
 Common options:
 
 ```bash
-./install.sh --service-name mailfastapi
 ./install.sh --service-user mailer
 ./install.sh --app-dir /opt/mailFastApi
 ./install.sh --skip-system-deps
 ./install.sh --skip-service
 ```
 
-Installer output includes a colored ASCII banner and detailed step-by-step install logs.
+Installer output includes a colored ASCII banner and project GitHub link.
+
+## Updater
+
+`updater.sh` checks repository updates and applies them safely with fast-forward only:
+
+```bash
+./updater.sh
+./updater.sh --check
+./updater.sh --apply --yes
+```
+
+When an update is applied, dependencies are synced and both services are restarted.
+The web monitor includes a `Guncellemeleri Denetle` button that calls updater endpoints.
 
 ## Tests
 

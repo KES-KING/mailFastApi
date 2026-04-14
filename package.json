@@ -6,6 +6,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/app.js",
+    "start:core": "node src/app.js",
+    "start:web": "node src/web.js",
     "test": "node Tests/run-tests.js",
     "test:mailsend": "node Tests/run-tests.js mailsend",
     "log": "node scripts/log-cli.js",

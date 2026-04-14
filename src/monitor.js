@@ -249,6 +249,8 @@ function renderMonitorPageHtml(options = {}) {
   const rawViewPath = escapeHtml(options.rawViewPath || "/monitor/raw-view");
   const logoPath = escapeHtml(options.logoPath || "/monitor/assets/logo.webp");
   const helpUrl = escapeHtml(options.helpUrl || "https://github.com/KES-KING/mailFastApi");
+  const updateCheckPath = escapeHtml(options.updateCheckPath || "");
+  const updateApplyPath = escapeHtml(options.updateApplyPath || "");
 
   return `<!doctype html>
 <html lang="en">
@@ -321,6 +323,25 @@ function renderMonitorPageHtml(options = {}) {
       color: #111;
       font-size: 12px;
       min-height: 36px;
+    }
+    .action-btn {
+      border: 1px solid var(--line);
+      background: #f9fafb;
+      color: #111;
+      font-size: 12px;
+      font-weight: 600;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .action-btn:hover {
+      background: #f2f2f2;
+    }
+    .action-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.7;
     }
     .help-link {
       width: 30px;
@@ -653,6 +674,7 @@ function renderMonitorPageHtml(options = {}) {
         <span id="conn-text">Connecting stream...</span>
         <span id="updated">Updated: -</span>
       </div>
+      <button id="check-update-btn" type="button" class="action-btn">Guncellemeleri Denetle</button>
       <a
         class="help-link"
         href="${helpUrl}"
@@ -750,10 +772,13 @@ function renderMonitorPageHtml(options = {}) {
   <script>
     const statsPath = "${statsPath}";
     const streamPath = "${streamPath}";
+    const updateCheckPath = "${updateCheckPath}";
+    const updateApplyPath = "${updateApplyPath}";
     const state = {
       snapshot: null,
       levelFilter: "ALL",
       textFilter: "",
+      updateBusy: false,
     };
 
     const ids = {
@@ -785,6 +810,7 @@ function renderMonitorPageHtml(options = {}) {
       chart: document.getElementById("timelineChart"),
       searchInput: document.getElementById("searchInput"),
       levelFilter: document.getElementById("levelFilter"),
+      checkUpdateBtn: document.getElementById("check-update-btn"),
     };
 
     let es = null;
@@ -800,6 +826,14 @@ function renderMonitorPageHtml(options = {}) {
       renderEvents((state.snapshot && state.snapshot.recent) || []);
     });
 
+    if (!updateCheckPath || !updateApplyPath) {
+      ids.checkUpdateBtn.style.display = "none";
+    } else {
+      ids.checkUpdateBtn.addEventListener("click", () => {
+        void checkForUpdates();
+      });
+    }
+
     connectSse();
     refreshNow();
 
@@ -812,6 +846,95 @@ function renderMonitorPageHtml(options = {}) {
       } catch (error) {
         setConnection("err", "Snapshot fetch failed");
       }
+    }
+
+    async function checkForUpdates() {
+      if (state.updateBusy) return;
+      state.updateBusy = true;
+      setUpdateButtonState("Denetleniyor...");
+
+      try {
+        const checkResponse = await fetch(updateCheckPath, {
+          cache: "no-store",
+          headers: { "Accept": "application/json" },
+        });
+        const checkPayload = await parseJsonSafely(checkResponse);
+        if (!checkResponse.ok) {
+          throw new Error(
+            (checkPayload && checkPayload.message) ||
+              "Guncelleme denetimi basarisiz oldu.",
+          );
+        }
+
+        if (!checkPayload || checkPayload.updateAvailable !== true) {
+          window.alert("Yeni guncelleme bulunmuyor.");
+          return;
+        }
+
+        const latest = checkPayload.latest || {};
+        const summary = latest.subject || latest.message || "Yeni commit bulundu.";
+        const shortSha = latest.shortSha || latest.sha || "-";
+        const ask = window.confirm(
+          "Yeni surum bulundu:\\n\\n" +
+            shortSha +
+            " - " +
+            summary +
+            "\\n\\nGuncelleme yuklensin mi?",
+        );
+        if (!ask) {
+          return;
+        }
+
+        setUpdateButtonState("Guncelleniyor...");
+        const applyResponse = await fetch(updateApplyPath, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          },
+          body: JSON.stringify({ confirm: true }),
+        });
+
+        const applyPayload = await parseJsonSafely(applyResponse);
+        if (!applyResponse.ok) {
+          throw new Error(
+            (applyPayload && applyPayload.message) ||
+              "Guncelleme uygulanirken hata olustu.",
+          );
+        }
+
+        window.alert(
+          (applyPayload && applyPayload.message) ||
+            "Guncelleme tamamlandi. Servisler yeniden baslatildi.",
+        );
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } catch (error) {
+        const message =
+          error && error.message
+            ? error.message
+            : "Guncelleme islemi basarisiz oldu.";
+        window.alert(message);
+      } finally {
+        state.updateBusy = false;
+        setUpdateButtonState("Guncellemeleri Denetle");
+      }
+    }
+
+    async function parseJsonSafely(response) {
+      try {
+        return await response.json();
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function setUpdateButtonState(text) {
+      if (!ids.checkUpdateBtn) return;
+      ids.checkUpdateBtn.textContent = text;
+      ids.checkUpdateBtn.disabled = state.updateBusy;
     }
 
     function connectSse() {
