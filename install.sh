@@ -270,6 +270,10 @@ is_secret_key() {
   esac
 }
 
+has_interactive_tty() {
+  [[ -r /dev/tty ]] && [[ -w /dev/tty ]]
+}
+
 env_value_from_existing() {
   local key="$1"
   local fallback="$2"
@@ -295,23 +299,23 @@ prompt_env_value() {
 
   prompt_label="$(env_prompt_label "${key}")"
 
-  if [[ ! -t 0 ]]; then
+  if ! has_interactive_tty; then
     echo "${default_value}"
     return
   fi
 
   if is_secret_key "${key}"; then
     if [[ -n "${default_value}" ]]; then
-      read -r -s -p "${prompt_label} [varsayilan: gizli, Enter mevcutu korur]: " input_value
+      read -r -s -p "${prompt_label} [varsayilan: gizli, Enter mevcutu korur]: " input_value < /dev/tty
     else
-      read -r -s -p "${prompt_label} [varsayilan: bos]: " input_value
+      read -r -s -p "${prompt_label} [varsayilan: bos]: " input_value < /dev/tty
     fi
-    echo ""
+    printf '\n' > /dev/tty
   else
     if [[ -n "${default_value}" ]]; then
-      read -r -p "${prompt_label} [varsayilan: ${default_value}]: " input_value
+      read -r -p "${prompt_label} [varsayilan: ${default_value}]: " input_value < /dev/tty
     else
-      read -r -p "${prompt_label} [varsayilan: bos]: " input_value
+      read -r -p "${prompt_label} [varsayilan: bos]: " input_value < /dev/tty
     fi
   fi
 
@@ -370,15 +374,15 @@ env_prompt_label() {
 ask_env_configuration_preference() {
   local choice=""
 
-  if [[ ! -t 0 ]]; then
+  if ! has_interactive_tty; then
     SHOULD_CONFIGURE_ENV="false"
     warn "Non-interactive shell detected. Skipping interactive .env editing."
     return
   fi
 
-  read -r -p ".env dosyasini simdi duzenlemek ister misiniz? [y/N]: " choice
+  read -r -p ".env dosyasini simdi duzenlemek ister misiniz? [y/N]: " choice < /dev/tty
   case "${choice}" in
-    y|Y|yes|YES|Yes)
+    y|Y|yes|YES|Yes|e|E|evet|EVET|Evet)
       SHOULD_CONFIGURE_ENV="true"
       ;;
     *)
@@ -429,16 +433,16 @@ configure_env_file() {
     exit 1
   fi
 
-  if [[ -f "${env_path}" ]] && [[ -t 0 ]]; then
+  if [[ -f "${env_path}" ]] && has_interactive_tty; then
     local overwrite_choice=""
-    read -r -p ".env already exists. Reconfigure from ${ENV_TEMPLATE_FILE}? [Y/n]: " overwrite_choice
+    read -r -p ".env already exists. Reconfigure from ${ENV_TEMPLATE_FILE}? [Y/n]: " overwrite_choice < /dev/tty
     if [[ "${overwrite_choice}" =~ ^[Nn]$ ]]; then
       info "Keeping existing .env file."
       return
     fi
   fi
 
-  if [[ ! -t 0 ]]; then
+  if ! has_interactive_tty; then
     warn "Non-interactive shell detected. .env will be generated with defaults from ${ENV_TEMPLATE_FILE}."
   else
     info "Configuring .env from ${ENV_TEMPLATE_FILE} (press Enter to accept defaults)."
