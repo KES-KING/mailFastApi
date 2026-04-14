@@ -18,6 +18,7 @@ SERVICE_GROUP=""
 ENV_TEMPLATE_FILE=".env.example"
 ENV_FILE=".env"
 SHOULD_CONFIGURE_ENV="false"
+PROMPT_RESULT=""
 
 RED="\033[1;31m"
 GREEN="\033[1;32m"
@@ -47,6 +48,7 @@ print_banner() {
 |_|  |_|\__,_|_|_|_|  \__,_|\___|\__/_/   \_\_|   |_|
 EOF
   echo -e "${RESET}${MAGENTA}Linux Auto Installer${RESET}"
+   echo -e "${RESET}${MAGENTA}https://github.com/KES-KING${RESET}"
   echo ""
 }
 
@@ -300,7 +302,7 @@ prompt_env_value() {
   prompt_label="$(env_prompt_label "${key}")"
 
   if ! has_interactive_tty; then
-    echo "${default_value}"
+    PROMPT_RESULT="${default_value}"
     return
   fi
 
@@ -320,9 +322,9 @@ prompt_env_value() {
   fi
 
   if [[ -z "${input_value}" ]]; then
-    echo "${default_value}"
+    PROMPT_RESULT="${default_value}"
   else
-    echo "${input_value}"
+    PROMPT_RESULT="${input_value}"
   fi
 }
 
@@ -460,7 +462,8 @@ configure_env_file() {
       key="${line%%=*}"
       template_default="${line#*=}"
       effective_default="$(env_value_from_existing "${key}" "${template_default}")"
-      final_value="$(prompt_env_value "${key}" "${effective_default}")"
+      prompt_env_value "${key}" "${effective_default}"
+      final_value="${PROMPT_RESULT}"
       printf '%s=%s\n' "${key}" "${final_value}" >> "${tmp_path}"
       continue
     fi
