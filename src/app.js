@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const crypto = require("node:crypto");
 const http = require("node:http");
+const path = require("node:path");
 const express = require("express");
 
 const { getTransporter, closeTransporter, verifyTransporter } = require("./mailer");
@@ -54,6 +55,11 @@ const MONITOR_STREAM_PATH = MONITOR_PATH === "/" ? "/stream" : `${MONITOR_PATH}/
 const MONITOR_METRICS_VIEW_PATH =
   MONITOR_PATH === "/" ? "/metrics-view" : `${MONITOR_PATH}/metrics-view`;
 const MONITOR_RAW_VIEW_PATH = MONITOR_PATH === "/" ? "/raw-view" : `${MONITOR_PATH}/raw-view`;
+const MONITOR_LOGO_ASSET_PATH =
+  MONITOR_PATH === "/" ? "/assets/logo.webp" : `${MONITOR_PATH}/assets/logo.webp`;
+const MONITOR_HELP_URL = String(
+  process.env.MONITOR_HELP_URL || "https://github.com/KES-KING/mailFastApi",
+).trim();
 const METRICS_PATH = normalizePath(process.env.METRICS_PATH || "/metrics");
 const MONITOR_HOST = String(process.env.MONITOR_HOST || "").trim();
 const MONITOR_PORT_RAW = toInt(process.env.MONITOR_PORT, 0);
@@ -73,6 +79,7 @@ const MONITOR_MAX_TIMELINE_MINUTES = Math.max(
   10,
   toInt(process.env.MONITOR_MAX_TIMELINE_MINUTES, 180),
 );
+const MONITOR_LOGO_FILE_PATH = path.resolve(__dirname, "..", "MailFastApi_Logo.webp");
 
 const authConfig = loadAuthConfig(process.env);
 const monitor = createMonitor({
@@ -352,6 +359,16 @@ function runtimeLog(level, event, details) {
 function registerMonitorRoutes(targetApp) {
   const monitorAuth = createMonitorAuthMiddleware(MONITOR_TOKEN);
 
+  targetApp.get(MONITOR_LOGO_ASSET_PATH, monitorAuth, (req, res, next) => {
+    res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
+    res.sendFile(MONITOR_LOGO_FILE_PATH, (error) => {
+      if (!error) {
+        return;
+      }
+      next(error);
+    });
+  });
+
   targetApp.get(MONITOR_PATH, monitorAuth, (req, res) => {
     const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
     const html = renderMonitorPageHtml({
@@ -361,6 +378,8 @@ function registerMonitorRoutes(targetApp) {
       metricsPath: `${METRICS_PATH}${suffix}`,
       metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
       rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
+      logoPath: `${MONITOR_LOGO_ASSET_PATH}${suffix}`,
+      helpUrl: MONITOR_HELP_URL,
     });
     res.status(200).type("html").send(html);
   });

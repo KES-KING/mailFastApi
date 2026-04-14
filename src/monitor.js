@@ -247,6 +247,8 @@ function renderMonitorPageHtml(options = {}) {
   const metricsPath = escapeHtml(options.metricsPath || "/metrics");
   const metricsViewPath = escapeHtml(options.metricsViewPath || "/monitor/metrics-view");
   const rawViewPath = escapeHtml(options.rawViewPath || "/monitor/raw-view");
+  const logoPath = escapeHtml(options.logoPath || "/monitor/assets/logo.webp");
+  const helpUrl = escapeHtml(options.helpUrl || "https://github.com/KES-KING/mailFastApi");
 
   return `<!doctype html>
 <html lang="en">
@@ -256,185 +258,103 @@ function renderMonitorPageHtml(options = {}) {
   <title>${title}</title>
   <style>
     :root {
-      --bg: #111217;
-      --sidebar: #0c0e13;
-      --header: #181b22;
-      --panel: #1f2229;
-      --panel-soft: #191c23;
-      --line: #343a46;
-      --text: #d8d9da;
-      --muted: #9fa4ad;
+      --bg: #dedede;
+      --header: #efefef;
+      --panel: #efefef;
+      --panel-soft: #e2e2e2;
+      --line: #c6cbd3;
+      --text: #1c1c1c;
+      --muted: #444;
       --good: #22c55e;
       --warn: #f59e0b;
       --bad: #ef4444;
-      --json-key: #6ed0e0;
-      --json-string: #7eb26d;
-      --json-number: #eab839;
-      --json-bool: #ba43a9;
-      --json-null: #999;
+      --json-key: #0a4a8a;
+      --json-string: #0a6a2e;
+      --json-number: #7a3b00;
+      --json-bool: #6a1b9a;
+      --json-null: #4b5563;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
     }
-    .shell {
-      min-height: 100vh;
-      display: grid;
-      grid-template-columns: 220px 1fr;
-      background: var(--bg);
-    }
-    .sidebar {
-      background: var(--sidebar);
-      border-right: 1px solid #2c3039;
-      padding: 10px 10px 16px 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .brand {
-      height: 40px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 0 6px;
-      border-bottom: 1px solid #232830;
-      margin-bottom: 8px;
-    }
-    .logo {
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 11px;
-      font-weight: 700;
-      background: #f2cc0c;
-      color: #111;
-    }
-    .brand span {
-      font-size: 13px;
-      color: #d8d9da;
-      font-weight: 600;
-      letter-spacing: 0.2px;
-    }
-    .side-nav {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .side-nav a {
-      text-decoration: none;
-      color: #c7cbd1;
-      font-size: 13px;
-      border: 1px solid transparent;
-      border-radius: 4px;
-      padding: 9px 10px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .side-nav a:hover {
-      background: #1f232b;
-      border-color: #2f3541;
-      color: #fff;
-    }
-    .side-nav a.active {
-      background: #20242d;
-      border-color: #3b424f;
-      color: #fff;
-    }
-    .main {
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-    }
     .topbar {
-      height: 50px;
-      border-bottom: 1px solid var(--line);
+      height: 90px;
+      min-height: 90px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
       background: var(--header);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0 14px;
+      padding: 6px 12px;
       gap: 10px;
-      flex-wrap: wrap;
+      margin: 8px 10px 0 10px;
     }
-    .toolbar-left {
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      min-height: 90px;
+    }
+    .topbar-right {
       display: flex;
       align-items: center;
       gap: 10px;
+      margin-left: auto;
+    }
+    .toolbar-meta {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: #111;
+      font-size: 14px;
+      min-height: 90px;
+    }
+    .status-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #111;
+      font-size: 12px;
       min-height: 36px;
     }
-    .nav-arrow {
-      border: 1px solid #3a404d;
-      background: #1f232b;
-      color: #d1d5db;
-      border-radius: 3px;
-      width: 28px;
-      height: 28px;
-      font-size: 15px;
-      line-height: 1;
+    .help-link {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--line);
+      background: #f9fafb;
+      color: #111;
+      text-decoration: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      font-weight: 700;
+      font-size: 15px;
+      line-height: 1;
+      border-radius: 50%;
+      flex: 0 0 auto;
     }
-    .dashboard-pill {
-      border: 1px solid #3a404d;
-      background: #232830;
-      color: #f3f4f6;
-      border-radius: 3px;
-      padding: 6px 10px;
-      font-size: 13px;
-      font-weight: 600;
+    .help-link:hover {
+      background: #f2f2f2;
     }
-    .toolbar-right {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      color: var(--muted);
-      font-size: 12px;
-      min-height: 36px;
+    .brand-logo {
+      width: 150px;
+      height: 78px;
+      object-fit: contain;
+      image-rendering: -webkit-optimize-contrast;
+      border-radius: 0;
+      background: transparent;
+      flex: 0 0 auto;
     }
     .wrap {
-      padding: 12px;
       width: 100%;
-    }
-    .title-wrap {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      margin-bottom: 10px;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: 4px;
-      background: var(--panel);
-    }
-    .title {
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: 0;
-      color: #f3f4f6;
-    }
-    .subtitle {
-      margin: 4px 0 0 0;
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.4;
-      max-width: 980px;
-    }
-    .meta {
-      font-size: 12px;
-      color: var(--muted);
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-      justify-content: flex-end;
+      max-width: none;
+      margin: 0;
+      padding: 10px;
     }
     .dot {
       width: 10px;
@@ -442,7 +362,7 @@ function renderMonitorPageHtml(options = {}) {
       border-radius: 999px;
       display: inline-block;
       background: var(--warn);
-      border: 1px solid #d97706;
+      border: 1px solid #b9c0c9;
     }
     .dot.ok { background: var(--good); border-color: #16a34a; }
     .dot.err { background: var(--bad); border-color: #dc2626; }
@@ -454,18 +374,18 @@ function renderMonitorPageHtml(options = {}) {
       font-size: 12px;
     }
     .links a {
-      color: #d8d9da;
+      color: #111;
       text-decoration: none;
-      border: 1px solid #3b424f;
-      background: #232830;
+      border: 1px solid #bcc3cc;
+      background: #f4f5f7;
       border-radius: 4px;
       padding: 6px 10px;
       font-weight: 600;
     }
     .links a:hover {
-      border-color: #515a6a;
-      background: #2b313b;
-      color: #fff;
+      border-color: #a8b0bb;
+      background: #eceff3;
+      color: #111;
     }
     .grid {
       display: grid;
@@ -490,7 +410,7 @@ function renderMonitorPageHtml(options = {}) {
     .card .v {
       font-size: 20px;
       font-weight: 700;
-      color: #f3f4f6;
+      color: #111;
       margin-bottom: 4px;
       line-height: 1.1;
     }
@@ -509,7 +429,7 @@ function renderMonitorPageHtml(options = {}) {
       margin: 0 0 8px 0;
       font-size: 13px;
       font-weight: 700;
-      color: #f3f4f6;
+      color: #111;
       text-transform: uppercase;
       letter-spacing: 0.45px;
     }
@@ -523,8 +443,8 @@ function renderMonitorPageHtml(options = {}) {
       margin-bottom: 10px;
     }
     .timeline-wrap {
-      border: 1px solid #3a404d;
-      background: #161a21;
+      border: 1px solid var(--line);
+      background: #f8f8f8;
       border-radius: 4px;
       padding: 8px;
     }
@@ -533,8 +453,8 @@ function renderMonitorPageHtml(options = {}) {
       min-height: 280px;
       display: block;
       border-radius: 4px;
-      background: #161a21;
-      border: 1px solid #303540;
+      background: #f8f8f8;
+      border: 1px solid var(--line);
     }
     .legend {
       margin-top: 8px;
@@ -557,11 +477,20 @@ function renderMonitorPageHtml(options = {}) {
     .legend .queued::before { background: #ef843c; }
     .legend .sent::before { background: #7eb26d; }
     .legend .failed::before { background: #e24d42; }
-    .lower {
+    .layout {
       display: grid;
-      grid-template-columns: 340px 1fr;
-      gap: 10px;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 12px;
       align-items: start;
+    }
+    .runtime-column {
+      min-width: 0;
+    }
+    .main-column {
+      min-width: 0;
+    }
+    .events-panel {
+      margin-top: 12px;
     }
     .runtime-grid {
       display: grid;
@@ -575,14 +504,14 @@ function renderMonitorPageHtml(options = {}) {
       justify-content: space-between;
       align-items: center;
       gap: 10px;
-      border-bottom: 1px solid #333944;
+      border-bottom: 1px solid #b8b8b8;
       padding-bottom: 6px;
     }
     .runtime-row:last-child { border-bottom: 0; padding-bottom: 0; }
     .runtime-row .label { color: var(--muted); }
-    .runtime-row .value { color: #f3f4f6; font-weight: 700; text-align: right; }
-    .runtime-row .value.warn { color: #f2cc0c; }
-    .runtime-row .value.bad { color: #f2495c; }
+    .runtime-row .value { color: #111; font-weight: 700; text-align: right; }
+    .runtime-row .value.warn { color: #b45309; }
+    .runtime-row .value.bad { color: #b91c1c; }
     .event-toolbar {
       display: flex;
       gap: 8px;
@@ -591,10 +520,10 @@ function renderMonitorPageHtml(options = {}) {
     }
     .event-toolbar input,
     .event-toolbar select {
-      background: #161a21;
+      background: #fff;
       color: var(--text);
-      border: 1px solid #3a404d;
-      border-radius: 4px;
+      border: 1px solid #888;
+      border-radius: 0;
       padding: 8px 10px;
       font-size: 12px;
       min-height: 34px;
@@ -607,8 +536,8 @@ function renderMonitorPageHtml(options = {}) {
       max-height: 580px;
       overflow: auto;
       border-radius: 4px;
-      border: 1px solid #3a404d;
-      background: #161a21;
+      border: 1px solid var(--line);
+      background: #fff;
     }
     table {
       width: 100%;
@@ -620,9 +549,9 @@ function renderMonitorPageHtml(options = {}) {
       position: sticky;
       top: 0;
       text-align: left;
-      background: #20252f;
-      color: #c5cad3;
-      border-bottom: 1px solid #3a404d;
+      background: #d9d9d9;
+      color: #111;
+      border-bottom: 1px solid var(--line);
       padding: 9px 8px;
       font-size: 11px;
       font-weight: 700;
@@ -631,20 +560,20 @@ function renderMonitorPageHtml(options = {}) {
     }
     tbody td {
       padding: 8px;
-      border-bottom: 1px solid #323844;
-      color: #d8d9da;
+      border-bottom: 1px solid #ddd;
+      color: #111;
       vertical-align: top;
       word-break: break-word;
     }
-    tbody tr:nth-child(even) td { background: #181c23; }
-    tbody tr:hover td { background: #232a34; }
-    .lvl-ERROR { color: #f2495c; font-weight: 700; }
-    .lvl-WARN { color: #eab839; font-weight: 700; }
-    .lvl-INFO { color: #7eb26d; font-weight: 700; }
-    .lvl-DEBUG { color: #6ed0e0; font-weight: 700; }
+    tbody tr:nth-child(even) td { background: #f6f6f6; }
+    tbody tr:hover td { background: #ececec; }
+    .lvl-ERROR { color: #b91c1c; font-weight: 700; }
+    .lvl-WARN { color: #b45309; font-weight: 700; }
+    .lvl-INFO { color: #0f766e; font-weight: 700; }
+    .lvl-DEBUG { color: #1d4ed8; font-weight: 700; }
     .trace {
       font-family: "Courier New", monospace;
-      color: #c5cad3;
+      color: #444;
       font-size: 11px;
     }
     .chips {
@@ -654,10 +583,10 @@ function renderMonitorPageHtml(options = {}) {
       margin-bottom: 6px;
     }
     .chip {
-      border: 1px solid #414957;
-      background: #2a303b;
-      color: #d8d9da;
-      border-radius: 12px;
+      border: 1px solid #c9cfd8;
+      background: #eff2f5;
+      color: #333;
+      border-radius: 4px;
       padding: 3px 8px;
       font-size: 10px;
       white-space: nowrap;
@@ -665,10 +594,10 @@ function renderMonitorPageHtml(options = {}) {
     pre.json {
       margin: 0;
       padding: 8px;
-      border: 1px solid #3a404d;
+      border: 1px solid #c9cfd8;
       border-radius: 4px;
-      background: #11161f;
-      color: #d8d9da;
+      background: #f7f7f7;
+      color: #111;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       font-size: 11px;
       line-height: 1.45;
@@ -685,52 +614,81 @@ function renderMonitorPageHtml(options = {}) {
     .empty { color: var(--muted); font-size: 12px; padding: 12px; }
     @media (max-width: 1320px) {
       .grid { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
-      .lower { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
     }
-    @media (max-width: 980px) {
-      .shell { grid-template-columns: 1fr; }
-      .sidebar { display: none; }
-    }
-    @media (max-width: 760px) {
+    @media (max-width: 900px) {
       .grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
       canvas { min-height: 240px; }
-      .topbar { height: auto; padding: 8px 10px; }
+      .topbar {
+        height: 90px;
+        min-height: 90px;
+        padding: 8px 10px;
+        flex-wrap: nowrap;
+        margin: 8px 8px 0 8px;
+      }
+      .topbar-right {
+        width: auto;
+        justify-content: flex-end;
+      }
+      .status-meta {
+        flex-wrap: wrap;
+      }
+      .brand-logo {
+        width: 120px;
+        height: 64px;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="logo">MF</div>
-        <span>mailFastApi</span>
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="toolbar-meta">
+        <img class="brand-logo" src="${logoPath}" alt="mailFastApi logo" loading="eager" decoding="async" />
       </div>
-      <nav class="side-nav">
-        <a class="active" href="#"><span>▦</span><span>Dashboards</span></a>
-        <a href="${metricsViewPath}" target="_blank" rel="noreferrer"><span>◫</span><span>Metrics View</span></a>
-        <a href="${rawViewPath}" target="_blank" rel="noreferrer"><span>{ }</span><span>Raw JSON View</span></a>
-        <a href="${metricsPath}" target="_blank" rel="noreferrer"><span>≡</span><span>Prometheus</span></a>
-        <a href="${statsPath}" target="_blank" rel="noreferrer"><span>⎘</span><span>Snapshot JSON</span></a>
-      </nav>
-    </aside>
+    </div>
+    <div class="topbar-right">
+      <div class="status-meta">
+        <span id="conn-dot" class="dot"></span>
+        <span id="conn-text">Connecting stream...</span>
+        <span id="updated">Updated: -</span>
+      </div>
+      <a
+        class="help-link"
+        href="${helpUrl}"
+        target="_blank"
+        rel="noreferrer noopener"
+        title="GitHub Help"
+        aria-label="GitHub Help"
+      >?</a>
+    </div>
+  </header>
 
-    <main class="main">
-      <header class="topbar">
-        <div class="toolbar-right">
-          <span id="conn-dot" class="dot"></span>
-          <span id="conn-text">Connecting stream...</span>
-          <span id="updated">Updated: -</span>
-        </div>
-      </header>
+  <div class="wrap">
+    <section class="layout">
+      <aside class="runtime-column">
+        <article class="panel">
+          <h3>Runtime</h3>
+          <p>Live service state and counters from current process memory.</p>
+          <div class="runtime-grid">
+            <div class="runtime-row"><span class="label">Uptime</span><span id="uptime" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">Auth Mode</span><span id="authMode" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">Queue Backend</span><span id="queueBackend" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">API Port</span><span id="apiPort" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">Monitor Port</span><span id="monitorPort" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">Token Issued</span><span id="tokenIssued" class="value">0</span></div>
+            <div class="runtime-row"><span class="label">Retries</span><span id="mailRetry" class="value warn">0</span></div>
+            <div class="runtime-row"><span class="label">Total Logs</span><span id="logsTotal" class="value">0</span></div>
+            <div class="runtime-row"><span class="label">Errors</span><span id="errorsTotal" class="value bad">0</span></div>
+            <div class="runtime-row"><span class="label">INFO Logs</span><span id="levelInfo" class="value">0</span></div>
+            <div class="runtime-row"><span class="label">WARN Logs</span><span id="levelWarn" class="value warn">0</span></div>
+            <div class="runtime-row"><span class="label">ERROR Logs</span><span id="levelError" class="value bad">0</span></div>
+            <div class="runtime-row"><span class="label">DEBUG Logs</span><span id="levelDebug" class="value">0</span></div>
+          </div>
+        </article>
+      </aside>
 
-      <div class="wrap">
-        <div class="title-wrap">
-          <div class="title">${title}</div>
-          <p class="subtitle">Grafana inspired monitoring layout with live queue and delivery telemetry.</p>
-        </div>
-
-       
-
+      <section class="main-column">
         <section class="grid">
           <article class="card"><div class="k">Send Requests</div><div id="sendRequests" class="v">0</div><div class="note">Inbound /send call count.</div></article>
           <article class="card"><div class="k">Mail Queued</div><div id="mailQueued" class="v">0</div><div class="note">Jobs accepted into queue.</div></article>
@@ -755,60 +713,38 @@ function renderMonitorPageHtml(options = {}) {
             <span class="item failed">Mail Failed</span>
           </div>
         </section>
+      </section>
+    </section>
 
-        <section class="lower">
-          <article class="panel">
-            <h3>Runtime</h3>
-            <p>Live service state and counters from current process memory.</p>
-            <div class="runtime-grid">
-              <div class="runtime-row"><span class="label">Uptime</span><span id="uptime" class="value">-</span></div>
-              <div class="runtime-row"><span class="label">Auth Mode</span><span id="authMode" class="value">-</span></div>
-              <div class="runtime-row"><span class="label">Queue Backend</span><span id="queueBackend" class="value">-</span></div>
-              <div class="runtime-row"><span class="label">API Port</span><span id="apiPort" class="value">-</span></div>
-              <div class="runtime-row"><span class="label">Monitor Port</span><span id="monitorPort" class="value">-</span></div>
-              <div class="runtime-row"><span class="label">Token Issued</span><span id="tokenIssued" class="value">0</span></div>
-              <div class="runtime-row"><span class="label">Retries</span><span id="mailRetry" class="value warn">0</span></div>
-              <div class="runtime-row"><span class="label">Total Logs</span><span id="logsTotal" class="value">0</span></div>
-              <div class="runtime-row"><span class="label">Errors</span><span id="errorsTotal" class="value bad">0</span></div>
-              <div class="runtime-row"><span class="label">INFO Logs</span><span id="levelInfo" class="value">0</span></div>
-              <div class="runtime-row"><span class="label">WARN Logs</span><span id="levelWarn" class="value warn">0</span></div>
-              <div class="runtime-row"><span class="label">ERROR Logs</span><span id="levelError" class="value bad">0</span></div>
-              <div class="runtime-row"><span class="label">DEBUG Logs</span><span id="levelDebug" class="value">0</span></div>
-            </div>
-          </article>
-
-          <article class="panel">
-            <h3>Events</h3>
-            <p>Detailed event stream with filters, trace ids, and formatted JSON details.</p>
-            <div class="event-toolbar">
-              <input id="searchInput" type="text" placeholder="Filter event, source, trace, or JSON detail..." />
-              <select id="levelFilter">
-                <option value="ALL">All Levels</option>
-                <option value="ERROR">ERROR</option>
-                <option value="WARN">WARN</option>
-                <option value="INFO">INFO</option>
-                <option value="DEBUG">DEBUG</option>
-              </select>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th style="width:180px;">Time</th>
-                    <th style="width:80px;">Level</th>
-                    <th style="width:190px;">Event</th>
-                    <th style="width:90px;">Source</th>
-                    <th style="width:170px;">Trace</th>
-                    <th>Details</th>
-                  </tr>
-                </thead>
-                <tbody id="eventsBody"></tbody>
-              </table>
-            </div>
-          </article>
-        </section>
+    <article class="panel events-panel">
+      <h3>Events</h3>
+      <p>Detailed event stream with filters, trace ids, and JSON details.</p>
+      <div class="event-toolbar">
+        <input id="searchInput" type="text" placeholder="Filter event, source, trace, or JSON detail..." />
+        <select id="levelFilter">
+          <option value="ALL">All Levels</option>
+          <option value="ERROR">ERROR</option>
+          <option value="WARN">WARN</option>
+          <option value="INFO">INFO</option>
+          <option value="DEBUG">DEBUG</option>
+        </select>
       </div>
-    </main>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:180px;">Time</th>
+              <th style="width:80px;">Level</th>
+              <th style="width:190px;">Event</th>
+              <th style="width:90px;">Source</th>
+              <th style="width:170px;">Trace</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="eventsBody"></tbody>
+        </table>
+      </div>
+    </article>
   </div>
 
   <script>
@@ -908,7 +844,7 @@ function renderMonitorPageHtml(options = {}) {
       if (pollingTimer) return;
       pollingTimer = setInterval(() => {
         refreshNow();
-      }, 3000);
+      }, 5000);
     }
 
     function stopPolling() {
@@ -967,7 +903,7 @@ function renderMonitorPageHtml(options = {}) {
       const source = entries.slice().reverse();
       const filtered = source
         .filter((entry) => matchEntry(entry, state.levelFilter, state.textFilter))
-        .slice(0, 200);
+        .slice(0, 120);
 
       if (filtered.length === 0) {
         ids.eventsBody.innerHTML =
@@ -986,7 +922,7 @@ function renderMonitorPageHtml(options = {}) {
                 "<span class='chip'>" + esc(item.label) + ": " + esc(item.value) + "</span>",
             )
             .join("");
-          const detailsJson = "<pre class='json'>" + highlightJson(details) + "</pre>";
+          const detailsJson = "<pre class='json'>" + esc(safeJson(details, true)) + "</pre>";
           return (
             "<tr>" +
             "<td>" +
@@ -1065,12 +1001,12 @@ function renderMonitorPageHtml(options = {}) {
       const p = 34;
 
       ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = "#161a21";
+      ctx.fillStyle = "#f8f8f8";
       ctx.fillRect(0, 0, w, h);
 
       if (!points || points.length === 0) {
-        ctx.fillStyle = "#9fa4ad";
-        ctx.font = "12px Segoe UI";
+        ctx.fillStyle = "#4b4b4b";
+        ctx.font = "12px Tahoma";
         ctx.fillText("No timeline data yet", 12, 22);
         return;
       }
@@ -1094,7 +1030,7 @@ function renderMonitorPageHtml(options = {}) {
     }
 
     function drawAxis(ctx, w, h, p, maxY, midY) {
-      ctx.strokeStyle = "#3a404d";
+      ctx.strokeStyle = "#b2b2b2";
       ctx.lineWidth = 1;
 
       for (let i = 0; i < 4; i += 1) {
@@ -1112,8 +1048,8 @@ function renderMonitorPageHtml(options = {}) {
       ctx.lineTo(p, h - p);
       ctx.stroke();
 
-      ctx.fillStyle = "#9fa4ad";
-      ctx.font = "11px Segoe UI";
+      ctx.fillStyle = "#4b4b4b";
+      ctx.font = "11px Tahoma";
       ctx.fillText(String(maxY), 8, p + 4);
       ctx.fillText(String(midY), 10, p + (h - p * 2) / 2 + 4);
       ctx.fillText("0", 18, h - p + 4);
@@ -1136,37 +1072,6 @@ function renderMonitorPageHtml(options = {}) {
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
-    }
-
-    function highlightJson(value) {
-      const json = safeJson(value, true);
-      const tokenRx =
-        /("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*"\\s*:?)|("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*")|\\btrue\\b|\\bfalse\\b|\\bnull\\b|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?/g;
-      let output = "";
-      let cursor = 0;
-      let match = tokenRx.exec(json);
-
-      while (match) {
-        const token = match[0];
-        const index = match.index;
-        output += esc(json.slice(cursor, index));
-        if (token.endsWith(":")) {
-          output += "<span class='json-key'>" + esc(token) + "</span>";
-        } else if (token.startsWith('"')) {
-          output += "<span class='json-string'>" + esc(token) + "</span>";
-        } else if (token === "true" || token === "false") {
-          output += "<span class='json-boolean'>" + esc(token) + "</span>";
-        } else if (token === "null") {
-          output += "<span class='json-null'>" + esc(token) + "</span>";
-        } else {
-          output += "<span class='json-number'>" + esc(token) + "</span>";
-        }
-        cursor = index + token.length;
-        match = tokenRx.exec(json);
-      }
-
-      output += esc(json.slice(cursor));
-      return output;
     }
 
     function safeJson(value, pretty) {
@@ -1230,101 +1135,92 @@ function renderMonitorMetricsPageHtml(options = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${title}</title>
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&display=swap");
     :root {
-      --bg: #070b14;
-      --panel: #0e1422;
-      --line: #1b2640;
-      --text: #e5ecff;
-      --muted: #93a0be;
+      --bg: #c8c8c8;
+      --panel: #efefef;
+      --line: #7a7a7a;
+      --text: #1c1c1c;
+      --muted: #444;
+      --header: #3a3a3a;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Public Sans", "Segoe UI", Tahoma, sans-serif;
-      background:
-        radial-gradient(1200px 600px at 0% -20%, #14223b 0%, rgba(20, 34, 59, 0) 60%),
-        radial-gradient(1000px 500px at 100% -20%, #0f2044 0%, rgba(15, 32, 68, 0) 65%),
-        var(--bg);
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
       color: var(--text);
     }
     .page {
-      width: min(1400px, 96vw);
-      margin: 18px auto 26px auto;
+      width: min(1400px, 98vw);
+      margin: 10px auto 20px auto;
     }
     .top {
+      border: 1px solid #000;
+      border-bottom: 0;
+      background: var(--header);
+      color: #f0f0f0;
+      padding: 9px 12px;
       display: flex;
+      gap: 10px;
       justify-content: space-between;
       align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-bottom: 10px;
-    }
-    .title {
-      margin: 0;
-      font-size: 24px;
-      font-weight: 800;
-      color: #f1f5ff;
-    }
-    .subtitle {
-      margin: 6px 0 0 0;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .links {
-      display: flex;
-      gap: 8px;
       flex-wrap: wrap;
     }
+    .title { margin: 0; font-size: 18px; font-weight: 700; }
+    .subtitle { margin: 4px 0 0 0; font-size: 12px; color: #d6d6d6; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; }
     .links a {
       text-decoration: none;
-      color: #dbeafe;
-      border: 1px solid #233354;
-      background: #0f1a31;
-      border-radius: 999px;
-      padding: 7px 12px;
+      color: #111;
+      border: 1px solid #7a7a7a;
+      background: #dcdcdc;
+      padding: 5px 10px;
+      border-radius: 0;
       font-size: 12px;
       font-weight: 600;
     }
     .grid {
+      border: 1px solid var(--line);
+      border-top: 0;
+      background: var(--panel);
       display: grid;
       grid-template-columns: repeat(4, minmax(140px, 1fr));
       gap: 8px;
-      margin-bottom: 10px;
+      padding: 10px;
     }
     .card {
       border: 1px solid var(--line);
-      background: linear-gradient(180deg, #121c33, #0f172b);
-      border-radius: 12px;
-      padding: 10px;
+      background: #f7f7f7;
+      padding: 8px;
+      border-radius: 0;
+      min-height: 72px;
     }
-    .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.45px; }
-    .v { font-size: 22px; font-weight: 800; color: #f8fbff; }
+    .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+    .v { font-size: 20px; font-weight: 700; color: #111; }
     .panel {
+      margin-top: 10px;
       border: 1px solid var(--line);
-      border-radius: 12px;
-      background: linear-gradient(180deg, #10192a, var(--panel));
-      padding: 12px;
-      margin-bottom: 10px;
+      background: var(--panel);
+      padding: 10px;
+      border-radius: 0;
     }
     .panel h3 {
       margin: 0 0 8px 0;
       font-size: 13px;
       text-transform: uppercase;
-      letter-spacing: 0.55px;
-      color: #dbeafe;
+      letter-spacing: 0.35px;
+      color: #111;
     }
     .panel p {
-      margin: 0 0 10px 0;
-      color: var(--muted);
+      margin: 0 0 8px 0;
       font-size: 12px;
+      color: var(--muted);
     }
     .table-wrap {
-      border: 1px solid #213252;
-      border-radius: 10px;
-      overflow: auto;
+      border: 1px solid #888;
+      background: #fff;
       max-height: 520px;
-      background: #0a1222;
+      overflow: auto;
     }
     table {
       width: 100%;
@@ -1335,39 +1231,38 @@ function renderMonitorMetricsPageHtml(options = {}) {
     thead th {
       position: sticky;
       top: 0;
-      background: #0f1a31;
-      color: #b8c8e8;
-      border-bottom: 1px solid #23385c;
+      background: #d9d9d9;
+      color: #111;
+      border-bottom: 1px solid #888;
       text-align: left;
-      padding: 9px 8px;
+      padding: 8px;
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.45px;
+      letter-spacing: 0.35px;
     }
     tbody td {
-      border-bottom: 1px solid #182844;
       padding: 8px;
-      color: #d9e5ff;
+      border-bottom: 1px solid #ddd;
+      color: #111;
       vertical-align: top;
       word-break: break-word;
     }
-    tbody tr:hover td { background: #0f1a31; }
+    tbody tr:nth-child(even) td { background: #f6f6f6; }
     pre {
       margin: 0;
-      padding: 10px;
-      border: 1px solid #253a5f;
-      border-radius: 10px;
-      background: #0a1222;
-      color: #dbeafe;
+      padding: 8px;
+      border: 1px solid #888;
+      background: #fff;
+      color: #111;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       font-size: 11px;
-      line-height: 1.45;
+      line-height: 1.4;
+      max-height: 340px;
+      overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 320px;
-      overflow: auto;
     }
-    @media (max-width: 950px) {
+    @media (max-width: 980px) {
       .grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
     }
   </style>
@@ -1377,12 +1272,12 @@ function renderMonitorMetricsPageHtml(options = {}) {
     <header class="top">
       <div>
         <h1 class="title">${title}</h1>
-        <p class="subtitle">Formatted Prometheus explorer with metric types, labels, values, and raw text.</p>
+        <p class="subtitle">Legacy formatted Prometheus explorer with low-overhead rendering.</p>
       </div>
       <nav class="links">
         <a href="${monitorPath}" target="_blank" rel="noreferrer">Live Monitor</a>
         <a href="${rawViewPath}" target="_blank" rel="noreferrer">Raw JSON View</a>
-        <a href="${metricsPath}" target="_blank" rel="noreferrer">Plain Prometheus</a>
+        <a href="${metricsPath}" target="_blank" rel="noreferrer">Prometheus Text</a>
       </nav>
     </header>
 
@@ -1390,12 +1285,12 @@ function renderMonitorMetricsPageHtml(options = {}) {
       <article class="card"><div class="k">Series</div><div id="seriesCount" class="v">0</div></article>
       <article class="card"><div class="k">Counters</div><div id="counterCount" class="v">0</div></article>
       <article class="card"><div class="k">Gauges</div><div id="gaugeCount" class="v">0</div></article>
-      <article class="card"><div class="k">Last Update</div><div id="updated" class="v" style="font-size:14px;">-</div></article>
+      <article class="card"><div class="k">Last Update</div><div id="updated" class="v" style="font-size:13px;">-</div></article>
     </section>
 
     <section class="panel">
-      <h3>Parsed Metrics Table</h3>
-      <p>Lines grouped by metric name, type, labels, and value.</p>
+      <h3>Parsed Metrics</h3>
+      <p>Grouped by metric name, type, labels, and value.</p>
       <div class="table-wrap">
         <table>
           <thead>
@@ -1482,7 +1377,7 @@ function renderMonitorMetricsPageHtml(options = {}) {
       ids.gaugeCount.textContent = gaugeCount.toLocaleString("en-US");
 
       if (rows.length === 0) {
-        ids.metricsBody.innerHTML = "<tr><td colspan='4' style='padding:10px;color:#93a0be;'>No metric series detected.</td></tr>";
+        ids.metricsBody.innerHTML = "<tr><td colspan='4' style='padding:10px;color:#555;'>No metric series detected.</td></tr>";
         return;
       }
 
@@ -1528,99 +1423,86 @@ function renderMonitorRawPageHtml(options = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${title}</title>
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&display=swap");
     :root {
-      --bg: #070b14;
-      --panel: #0e1422;
-      --line: #1b2640;
-      --text: #e5ecff;
-      --muted: #93a0be;
-      --json-key: #7dd3fc;
-      --json-string: #86efac;
-      --json-number: #fcd34d;
-      --json-bool: #f9a8d4;
-      --json-null: #c4b5fd;
+      --bg: #c8c8c8;
+      --panel: #efefef;
+      --line: #7a7a7a;
+      --text: #1c1c1c;
+      --muted: #444;
+      --header: #3a3a3a;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Public Sans", "Segoe UI", Tahoma, sans-serif;
-      background:
-        radial-gradient(1200px 600px at 0% -20%, #14223b 0%, rgba(20, 34, 59, 0) 60%),
-        radial-gradient(1000px 500px at 100% -20%, #0f2044 0%, rgba(15, 32, 68, 0) 65%),
-        var(--bg);
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      background: var(--bg);
       color: var(--text);
     }
     .page {
-      width: min(1400px, 96vw);
-      margin: 18px auto 26px auto;
+      width: min(1400px, 98vw);
+      margin: 10px auto 20px auto;
     }
     .top {
+      border: 1px solid #000;
+      border-bottom: 0;
+      background: var(--header);
+      color: #f0f0f0;
+      padding: 9px 12px;
       display: flex;
+      gap: 10px;
       justify-content: space-between;
       align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-bottom: 10px;
-    }
-    .title {
-      margin: 0;
-      font-size: 24px;
-      font-weight: 800;
-      color: #f1f5ff;
-    }
-    .subtitle {
-      margin: 6px 0 0 0;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .links {
-      display: flex;
-      gap: 8px;
       flex-wrap: wrap;
     }
+    .title { margin: 0; font-size: 18px; font-weight: 700; }
+    .subtitle { margin: 4px 0 0 0; font-size: 12px; color: #d6d6d6; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; }
     .links a {
       text-decoration: none;
-      color: #dbeafe;
-      border: 1px solid #233354;
-      background: #0f1a31;
-      border-radius: 999px;
-      padding: 7px 12px;
+      color: #111;
+      border: 1px solid #7a7a7a;
+      background: #dcdcdc;
+      padding: 5px 10px;
+      border-radius: 0;
       font-size: 12px;
       font-weight: 600;
     }
     .grid {
+      border: 1px solid var(--line);
+      border-top: 0;
+      background: var(--panel);
       display: grid;
       grid-template-columns: repeat(4, minmax(140px, 1fr));
       gap: 8px;
-      margin-bottom: 10px;
+      padding: 10px;
     }
     .card {
       border: 1px solid var(--line);
-      background: linear-gradient(180deg, #121c33, #0f172b);
-      border-radius: 12px;
-      padding: 10px;
+      background: #f7f7f7;
+      padding: 8px;
+      border-radius: 0;
+      min-height: 72px;
     }
-    .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.45px; }
-    .v { font-size: 20px; font-weight: 800; color: #f8fbff; line-height: 1.2; word-break: break-word; }
+    .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+    .v { font-size: 18px; font-weight: 700; color: #111; line-height: 1.25; word-break: break-word; }
     .panel {
+      margin-top: 10px;
       border: 1px solid var(--line);
-      border-radius: 12px;
-      background: linear-gradient(180deg, #10192a, var(--panel));
-      padding: 12px;
-      margin-bottom: 10px;
+      background: var(--panel);
+      padding: 10px;
+      border-radius: 0;
     }
     .panel h3 {
       margin: 0 0 8px 0;
       font-size: 13px;
       text-transform: uppercase;
-      letter-spacing: 0.55px;
-      color: #dbeafe;
+      letter-spacing: 0.35px;
+      color: #111;
     }
     .panel p {
-      margin: 0 0 10px 0;
-      color: var(--muted);
+      margin: 0 0 8px 0;
       font-size: 12px;
+      color: var(--muted);
     }
     .runtime-grid {
       display: grid;
@@ -1628,38 +1510,30 @@ function renderMonitorRawPageHtml(options = {}) {
       gap: 8px;
     }
     .runtime-item {
-      border: 1px solid #223457;
-      background: #0a1222;
-      border-radius: 8px;
-      padding: 8px 10px;
+      border: 1px solid #888;
+      background: #fff;
+      padding: 8px;
       display: flex;
       justify-content: space-between;
-      gap: 12px;
-      align-items: center;
+      gap: 10px;
       font-size: 12px;
     }
-    .runtime-item .label { color: var(--muted); }
-    .runtime-item .value { color: #f8fbff; font-weight: 700; }
+    .runtime-item .label { color: #555; }
+    .runtime-item .value { color: #111; font-weight: 700; }
     pre {
       margin: 0;
-      padding: 10px;
-      border: 1px solid #253a5f;
-      border-radius: 10px;
-      background: #071225;
-      color: #dbeafe;
+      padding: 8px;
+      border: 1px solid #888;
+      background: #fff;
+      color: #111;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       font-size: 11px;
-      line-height: 1.45;
-      white-space: pre-wrap;
-      word-break: break-word;
+      line-height: 1.4;
       max-height: 560px;
       overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
-    .json-key { color: var(--json-key); }
-    .json-string { color: var(--json-string); }
-    .json-number { color: var(--json-number); }
-    .json-boolean { color: var(--json-bool); }
-    .json-null { color: var(--json-null); }
     @media (max-width: 980px) {
       .grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
       .runtime-grid { grid-template-columns: 1fr; }
@@ -1671,12 +1545,12 @@ function renderMonitorRawPageHtml(options = {}) {
     <header class="top">
       <div>
         <h1 class="title">${title}</h1>
-        <p class="subtitle">Formatted monitor snapshot with runtime summary and syntax-highlighted JSON.</p>
+        <p class="subtitle">Legacy formatted monitor snapshot with lightweight JSON rendering.</p>
       </div>
       <nav class="links">
         <a href="${monitorPath}" target="_blank" rel="noreferrer">Live Monitor</a>
         <a href="${metricsViewPath}" target="_blank" rel="noreferrer">Metrics View</a>
-        <a href="${statsPath}" target="_blank" rel="noreferrer">Plain Snapshot JSON</a>
+        <a href="${statsPath}" target="_blank" rel="noreferrer">Snapshot JSON</a>
       </nav>
     </header>
 
@@ -1694,7 +1568,7 @@ function renderMonitorRawPageHtml(options = {}) {
     </section>
 
     <section class="panel">
-      <h3>Formatted JSON Payload</h3>
+      <h3>JSON Payload</h3>
       <pre id="jsonBody">Loading...</pre>
     </section>
   </div>
@@ -1711,7 +1585,7 @@ function renderMonitorRawPageHtml(options = {}) {
     };
 
     load();
-    setInterval(() => { void load(); }, 3000);
+    setInterval(() => { void load(); }, 4000);
 
     async function load() {
       try {
@@ -1762,32 +1636,7 @@ function renderMonitorRawPageHtml(options = {}) {
         )
         .join("");
 
-      ids.jsonBody.innerHTML = highlightJson(snapshot);
-    }
-
-    function highlightJson(value) {
-      const json = safeJson(value, true);
-      const tokenRx =
-        /("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*"\\s*:?)|("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*")|\\btrue\\b|\\bfalse\\b|\\bnull\\b|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?/g;
-      let output = "";
-      let cursor = 0;
-      let match = tokenRx.exec(json);
-
-      while (match) {
-        const token = match[0];
-        const index = match.index;
-        output += esc(json.slice(cursor, index));
-        if (token.endsWith(":")) output += "<span class='json-key'>" + esc(token) + "</span>";
-        else if (token.startsWith('"')) output += "<span class='json-string'>" + esc(token) + "</span>";
-        else if (token === "true" || token === "false") output += "<span class='json-boolean'>" + esc(token) + "</span>";
-        else if (token === "null") output += "<span class='json-null'>" + esc(token) + "</span>";
-        else output += "<span class='json-number'>" + esc(token) + "</span>";
-        cursor = index + token.length;
-        match = tokenRx.exec(json);
-      }
-
-      output += esc(json.slice(cursor));
-      return output;
+      ids.jsonBody.textContent = safeJson(snapshot, true);
     }
 
     function safeJson(value, pretty) {
