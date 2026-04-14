@@ -193,15 +193,58 @@ node_major_version() {
   node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo "0"
 }
 
-install_node_lts_if_needed() {
-  local major
-  major="$(node_major_version)"
-  if [[ "${major}" -ge 20 ]]; then
-    ok "Node.js version is already suitable (>=20)."
+service_user_node_major_version() {
+  if ! run_as_service_user "command -v node >/dev/null 2>&1"; then
+    echo "0"
+    return
+  fi
+  run_as_service_user "node -p \"process.versions.node.split('.')[0]\"" 2>/dev/null || echo "0"
+}
+
+service_user_has_npm() {
+  run_as_service_user "command -v npm >/dev/null 2>&1"
+}
+
+install_npm_package_if_needed() {
+  if service_user_has_npm; then
     return
   fi
 
-  info "Node.js >=20 not found, installing Node.js LTS..."
+  warn "npm command is still missing for service user. Trying package-manager npm install..."
+  case "${PKG_MANAGER}" in
+    apt)
+      ${SUDO} apt-get install -y npm
+      ;;
+    dnf)
+      ${SUDO} dnf install -y npm
+      ;;
+    yum)
+      ${SUDO} yum install -y npm
+      ;;
+    pacman)
+      ${SUDO} pacman -Sy --noconfirm --needed npm
+      ;;
+    zypper)
+      ${SUDO} zypper --non-interactive install npm
+      ;;
+    *)
+      warn "Unsupported package manager for npm fallback install."
+      ;;
+  esac
+}
+
+install_node_lts_if_needed() {
+  local major
+  local service_major
+  major="$(node_major_version)"
+  service_major="$(service_user_node_major_version)"
+
+  if [[ "${major}" -ge 20 ]] && [[ "${service_major}" -ge 20 ]] && service_user_has_npm; then
+    ok "Node.js/npm are already suitable for installer and service user (>=20)."
+    return
+  fi
+
+  info "Node.js/npm not fully available for service user. Installing Node.js LTS..."
   case "${PKG_MANAGER}" in
     apt)
       curl -fsSL https://deb.nodesource.com/setup_22.x | ${SUDO} -E bash -
@@ -228,12 +271,16 @@ install_node_lts_if_needed() {
       ;;
   esac
 
+  install_npm_package_if_needed
+
   major="$(node_major_version)"
-  if [[ "${major}" -lt 20 ]]; then
-    err "Node.js installation did not result in version >=20."
+  service_major="$(service_user_node_major_version)"
+  if [[ "${major}" -lt 20 ]] || [[ "${service_major}" -lt 20 ]] || ! service_user_has_npm; then
+    err "Node.js/npm installation did not complete successfully for service user."
+    err "Current user node major: ${major}, service user node major: ${service_major}"
     exit 1
   fi
-  ok "Node.js installed successfully."
+  ok "Node.js/npm are ready for service user."
 }
 
 ensure_redis_running() {
@@ -514,6 +561,11 @@ run_as_service_user() {
 
 run_npm_install() {
   info "Installing Node.js dependencies (npm install)..."
+  if ! service_user_has_npm; then
+    err "npm command is not available for service user (${SERVICE_USER})."
+    err "Run installer without --skip-system-deps or install npm globally, then retry."
+    exit 1
+  fi
   run_as_service_user "cd '${APP_DIR}' && npm install"
 
   ok "npm dependencies installed."
