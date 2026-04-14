@@ -5,6 +5,7 @@
 - Protocol: HTTP/1.1
 - Content-Type: `application/json`
 - Base URL: `http://localhost:3000` (default)
+- Monitor base URL: same as `Base URL` by default. If `MONITOR_PORT` is set to a different value than `PORT`, monitor endpoints are exposed on `http://localhost:<MONITOR_PORT>`.
 
 ## Queue & Processing Model
 
@@ -127,11 +128,14 @@ Success `200`:
   - queue depth / active jobs
   - mail queued/sent/failed counters
   - recent events table (live)
+- If `MONITOR_PORT` is configured and differs from API `PORT`, open this endpoint from monitor port.
 
 Related endpoints:
 
 - `GET /monitor/stats` -> JSON snapshot
 - `GET /monitor/stream` -> Server-Sent Events live snapshot stream
+- `GET /monitor/metrics-view` -> formatted Prometheus metrics page
+- `GET /monitor/raw-view` -> formatted raw snapshot JSON page
 - `GET /metrics` -> Prometheus text metrics
 
 ## Redis Queue Notes

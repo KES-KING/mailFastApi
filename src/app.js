@@ -12,7 +12,12 @@ const { loadAuthConfig, authenticateClient, issueAccessToken, verifyJwt } = requ
 const { createSystemStore } = require("./systemStore");
 const { createSystemLogger } = require("./systemLogger");
 const { createMailQueue } = require("./mailQueueFactory");
-const { createMonitor, renderMonitorPageHtml } = require("./monitor");
+const {
+  createMonitor,
+  renderMonitorPageHtml,
+  renderMonitorMetricsPageHtml,
+  renderMonitorRawPageHtml,
+} = require("./monitor");
 
 const PORT = toInt(process.env.PORT, 3000);
 const WORKER_CONCURRENCY = toInt(process.env.WORKER_CONCURRENCY, 2);
@@ -46,7 +51,15 @@ const MONITOR_ENABLED = toBoolean(process.env.MONITOR_ENABLED, true);
 const MONITOR_PATH = normalizePath(process.env.MONITOR_PATH || "/monitor");
 const MONITOR_STATS_PATH = MONITOR_PATH === "/" ? "/stats" : `${MONITOR_PATH}/stats`;
 const MONITOR_STREAM_PATH = MONITOR_PATH === "/" ? "/stream" : `${MONITOR_PATH}/stream`;
+const MONITOR_METRICS_VIEW_PATH =
+  MONITOR_PATH === "/" ? "/metrics-view" : `${MONITOR_PATH}/metrics-view`;
+const MONITOR_RAW_VIEW_PATH = MONITOR_PATH === "/" ? "/raw-view" : `${MONITOR_PATH}/raw-view`;
 const METRICS_PATH = normalizePath(process.env.METRICS_PATH || "/metrics");
+const MONITOR_HOST = String(process.env.MONITOR_HOST || "").trim();
+const MONITOR_PORT_RAW = toInt(process.env.MONITOR_PORT, 0);
+const MONITOR_SEPARATE_PORT =
+  MONITOR_ENABLED && MONITOR_PORT_RAW > 0 && MONITOR_PORT_RAW !== PORT;
+const MONITOR_PORT = MONITOR_SEPARATE_PORT ? MONITOR_PORT_RAW : PORT;
 const MONITOR_SSE_INTERVAL_MS = Math.max(
   500,
   toInt(process.env.MONITOR_SSE_INTERVAL_MS, 1000),
@@ -70,6 +83,8 @@ const monitor = createMonitor({
 const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+const monitorApp = MONITOR_SEPARATE_PORT ? express() : app;
+monitorApp.disable("x-powered-by");
 
 const transporter = getTransporter();
 const store = createSystemStore({ dbPath: LOG_DB_PATH });
@@ -156,86 +171,7 @@ app.get("/health", async (req, res, next) => {
 });
 
 if (MONITOR_ENABLED) {
-  const monitorAuth = createMonitorAuthMiddleware(MONITOR_TOKEN);
-
-  app.get(MONITOR_PATH, monitorAuth, (req, res) => {
-    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
-    const html = renderMonitorPageHtml({
-      title: "mailFastApi Live Monitor",
-      statsPath: `${MONITOR_STATS_PATH}${suffix}`,
-      streamPath: `${MONITOR_STREAM_PATH}${suffix}`,
-      metricsPath: `${METRICS_PATH}${suffix}`,
-    });
-    res.status(200).type("html").send(html);
-  });
-
-  app.get(MONITOR_STATS_PATH, monitorAuth, async (req, res, next) => {
-    try {
-      const snapshot = await collectMonitorSnapshot();
-      res.status(200).json(snapshot);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get(MONITOR_STREAM_PATH, monitorAuth, async (req, res, next) => {
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    if (typeof res.flushHeaders === "function") {
-      res.flushHeaders();
-    }
-
-    let closed = false;
-
-    const publishSnapshot = async () => {
-      if (closed) return;
-      const snapshot = await collectMonitorSnapshot();
-      sendSseEvent(res, "snapshot", snapshot);
-    };
-
-    try {
-      await publishSnapshot();
-    } catch (error) {
-      return next(error);
-    }
-
-    const snapshotTimer = setInterval(() => {
-      void publishSnapshot();
-    }, MONITOR_SSE_INTERVAL_MS);
-
-    const heartbeatTimer = setInterval(() => {
-      if (closed) return;
-      res.write(": ping\n\n");
-    }, 15000);
-
-    const cleanup = () => {
-      if (closed) return;
-      closed = true;
-      clearInterval(snapshotTimer);
-      clearInterval(heartbeatTimer);
-      try {
-        res.end();
-      } catch (error) {
-        // noop
-      }
-    };
-
-    req.on("close", cleanup);
-    req.on("error", cleanup);
-  });
-
-  app.get(METRICS_PATH, monitorAuth, async (req, res, next) => {
-    try {
-      const runtime = await collectRuntimeMetrics();
-      const text = monitor.toPrometheus(runtime);
-      res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-      res.status(200).send(text);
-    } catch (error) {
-      next(error);
-    }
-  });
+  registerMonitorRoutes(monitorApp);
 }
 
 app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) => {
@@ -305,20 +241,13 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   return res.status(202).json({ status: "queued" });
 });
 
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
-    return res.status(400).json({ error: "Invalid JSON payload." });
-  }
-
-  logger.error("internal error", {
-    message: err && err.message ? err.message : "Unknown error",
-    stack: err && err.stack ? err.stack : undefined,
-  });
-
-  return res.status(500).json({ error: "Internal server error." });
-});
+app.use(handleServerError);
+if (monitorApp !== app) {
+  monitorApp.use(handleServerError);
+}
 
 const server = http.createServer(app);
+const monitorServer = MONITOR_SEPARATE_PORT ? http.createServer(monitorApp) : null;
 let isShuttingDown = false;
 
 bootstrap().catch(async (error) => {
@@ -341,7 +270,7 @@ bootstrap().catch(async (error) => {
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
-module.exports = { app };
+module.exports = { app, monitorApp };
 
 async function bootstrap() {
   await logger.start();
@@ -349,18 +278,27 @@ async function bootstrap() {
 
   worker.start();
   verifyTransporter(runtimeLog);
+  await listenServer(server, PORT);
 
-  server.listen(PORT, () => {
-    logger.info("mailFastApi started", {
-      port: PORT,
-      workerConcurrency: WORKER_CONCURRENCY,
-      authMode: authConfig.mode,
-      queueBackend: queue.backend,
-      queueMaxSize: QUEUE_MAX_SIZE,
-      redisQueueKey: queue.backend === "redis" ? REDIS_QUEUE_KEY : undefined,
-      logFilePath: logger.getLogFilePath(),
-      logDbPath: store.getDbPath(),
-    });
+  if (monitorServer) {
+    await listenServer(monitorServer, MONITOR_PORT, MONITOR_HOST || undefined);
+  }
+
+  logger.info("mailFastApi started", {
+    port: PORT,
+    monitorEnabled: MONITOR_ENABLED,
+    monitorPath: MONITOR_PATH,
+    monitorSeparatePort: MONITOR_SEPARATE_PORT,
+    monitorPort: MONITOR_PORT,
+    monitorHost: MONITOR_HOST || undefined,
+    metricsPath: METRICS_PATH,
+    workerConcurrency: WORKER_CONCURRENCY,
+    authMode: authConfig.mode,
+    queueBackend: queue.backend,
+    queueMaxSize: QUEUE_MAX_SIZE,
+    redisQueueKey: queue.backend === "redis" ? REDIS_QUEUE_KEY : undefined,
+    logFilePath: logger.getLogFilePath(),
+    logDbPath: store.getDbPath(),
   });
 }
 
@@ -379,6 +317,9 @@ async function gracefulShutdown(signal) {
   forceExit.unref();
 
   try {
+    if (monitorServer) {
+      await closeServer(monitorServer);
+    }
     await closeServer(server);
     await worker.stop({ drainTimeoutMs: SHUTDOWN_TIMEOUT_MS });
     await queue.stop();
@@ -408,6 +349,113 @@ function runtimeLog(level, event, details) {
   logger.log(level, event, details, { source: "runtime" });
 }
 
+function registerMonitorRoutes(targetApp) {
+  const monitorAuth = createMonitorAuthMiddleware(MONITOR_TOKEN);
+
+  targetApp.get(MONITOR_PATH, monitorAuth, (req, res) => {
+    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+    const html = renderMonitorPageHtml({
+      title: "mailFastApi Live Monitor",
+      statsPath: `${MONITOR_STATS_PATH}${suffix}`,
+      streamPath: `${MONITOR_STREAM_PATH}${suffix}`,
+      metricsPath: `${METRICS_PATH}${suffix}`,
+      metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
+      rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
+    });
+    res.status(200).type("html").send(html);
+  });
+
+  targetApp.get(MONITOR_METRICS_VIEW_PATH, monitorAuth, (req, res) => {
+    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+    const html = renderMonitorMetricsPageHtml({
+      title: "mailFastApi Prometheus Metrics View",
+      metricsPath: `${METRICS_PATH}${suffix}`,
+      monitorPath: `${MONITOR_PATH}${suffix}`,
+      rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
+    });
+    res.status(200).type("html").send(html);
+  });
+
+  targetApp.get(MONITOR_RAW_VIEW_PATH, monitorAuth, (req, res) => {
+    const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+    const html = renderMonitorRawPageHtml({
+      title: "mailFastApi Raw Snapshot View",
+      statsPath: `${MONITOR_STATS_PATH}${suffix}`,
+      monitorPath: `${MONITOR_PATH}${suffix}`,
+      metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
+    });
+    res.status(200).type("html").send(html);
+  });
+
+  targetApp.get(MONITOR_STATS_PATH, monitorAuth, async (req, res, next) => {
+    try {
+      const snapshot = await collectMonitorSnapshot();
+      res.status(200).json(snapshot);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  targetApp.get(MONITOR_STREAM_PATH, monitorAuth, async (req, res, next) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") {
+      res.flushHeaders();
+    }
+
+    let closed = false;
+
+    const publishSnapshot = async () => {
+      if (closed) return;
+      const snapshot = await collectMonitorSnapshot();
+      sendSseEvent(res, "snapshot", snapshot);
+    };
+
+    try {
+      await publishSnapshot();
+    } catch (error) {
+      return next(error);
+    }
+
+    const snapshotTimer = setInterval(() => {
+      void publishSnapshot();
+    }, MONITOR_SSE_INTERVAL_MS);
+
+    const heartbeatTimer = setInterval(() => {
+      if (closed) return;
+      res.write(": ping\n\n");
+    }, 15000);
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(snapshotTimer);
+      clearInterval(heartbeatTimer);
+      try {
+        res.end();
+      } catch (error) {
+        // noop
+      }
+    };
+
+    req.on("close", cleanup);
+    req.on("error", cleanup);
+  });
+
+  targetApp.get(METRICS_PATH, monitorAuth, async (req, res, next) => {
+    try {
+      const runtime = await collectRuntimeMetrics();
+      const text = monitor.toPrometheus(runtime);
+      res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+      res.status(200).send(text);
+    } catch (error) {
+      next(error);
+    }
+  });
+}
+
 async function collectMonitorSnapshot() {
   const runtime = await collectRuntimeMetrics();
   return monitor.getSnapshot(runtime);
@@ -427,6 +475,7 @@ async function collectRuntimeMetrics() {
     authMode: authConfig.mode,
     queueBackend: queue.backend,
     port: PORT,
+    monitorPort: MONITOR_PORT,
   };
 }
 
@@ -703,6 +752,41 @@ function closeServer(instance) {
       }
       resolve();
     });
+  });
+}
+
+function handleServerError(err, req, res, next) {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    return res.status(400).json({ error: "Invalid JSON payload." });
+  }
+
+  logger.error("internal error", {
+    path: req && req.path ? req.path : undefined,
+    message: err && err.message ? err.message : "Unknown error",
+    stack: err && err.stack ? err.stack : undefined,
+  });
+
+  return res.status(500).json({ error: "Internal server error." });
+}
+
+function listenServer(instance, port, host) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      instance.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      instance.off("error", onError);
+      resolve();
+    };
+
+    instance.once("error", onError);
+    instance.once("listening", onListening);
+    if (host) {
+      instance.listen(port, host);
+      return;
+    }
+    instance.listen(port);
   });
 }
 

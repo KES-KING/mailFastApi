@@ -55,6 +55,7 @@ function createMonitor(options = {}) {
         authMode: runtime.authMode || null,
         queueBackend: runtime.queueBackend || null,
         port: numberOrNull(runtime.port),
+        monitorPort: numberOrNull(runtime.monitorPort),
       },
       totals: { ...totals },
       levels: { ...levels },
@@ -244,6 +245,8 @@ function renderMonitorPageHtml(options = {}) {
   const statsPath = escapeHtml(options.statsPath || "/monitor/stats");
   const streamPath = escapeHtml(options.streamPath || "/monitor/stream");
   const metricsPath = escapeHtml(options.metricsPath || "/metrics");
+  const metricsViewPath = escapeHtml(options.metricsViewPath || "/monitor/metrics-view");
+  const rawViewPath = escapeHtml(options.rawViewPath || "/monitor/raw-view");
 
   return `<!doctype html>
 <html lang="en">
@@ -253,41 +256,176 @@ function renderMonitorPageHtml(options = {}) {
   <title>${title}</title>
   <style>
     :root {
-      --bg: #0f172a;
-      --panel: #111827;
-      --panel-2: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --accent: #22d3ee;
-      --ok: #22c55e;
+      --bg: #111217;
+      --sidebar: #0c0e13;
+      --header: #181b22;
+      --panel: #1f2229;
+      --panel-soft: #191c23;
+      --line: #343a46;
+      --text: #d8d9da;
+      --muted: #9fa4ad;
+      --good: #22c55e;
       --warn: #f59e0b;
-      --err: #ef4444;
-      --line: #374151;
+      --bad: #ef4444;
+      --json-key: #6ed0e0;
+      --json-string: #7eb26d;
+      --json-number: #eab839;
+      --json-bool: #ba43a9;
+      --json-null: #999;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Roboto, Arial, sans-serif;
-      background: radial-gradient(1200px 600px at 10% -10%, #1e293b 0%, var(--bg) 55%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
       color: var(--text);
       min-height: 100vh;
     }
-    .wrap {
-      width: min(1200px, 96vw);
-      margin: 18px auto 24px auto;
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      background: var(--bg);
+    }
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid #2c3039;
+      padding: 10px 10px 16px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .brand {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 6px;
+      border-bottom: 1px solid #232830;
+      margin-bottom: 8px;
+    }
+    .logo {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      background: #f2cc0c;
+      color: #111;
+    }
+    .brand span {
+      font-size: 13px;
+      color: #d8d9da;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+    .side-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .side-nav a {
+      text-decoration: none;
+      color: #c7cbd1;
+      font-size: 13px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 9px 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .side-nav a:hover {
+      background: #1f232b;
+      border-color: #2f3541;
+      color: #fff;
+    }
+    .side-nav a.active {
+      background: #20242d;
+      border-color: #3b424f;
+      color: #fff;
+    }
+    .main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
     }
     .topbar {
+      height: 50px;
+      border-bottom: 1px solid var(--line);
+      background: var(--header);
       display: flex;
-      gap: 10px;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 12px;
+      padding: 0 14px;
+      gap: 10px;
       flex-wrap: wrap;
+    }
+    .toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 36px;
+    }
+    .nav-arrow {
+      border: 1px solid #3a404d;
+      background: #1f232b;
+      color: #d1d5db;
+      border-radius: 3px;
+      width: 28px;
+      height: 28px;
+      font-size: 15px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .dashboard-pill {
+      border: 1px solid #3a404d;
+      background: #232830;
+      color: #f3f4f6;
+      border-radius: 3px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      min-height: 36px;
+    }
+    .wrap {
+      padding: 12px;
+      width: 100%;
+    }
+    .title-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--panel);
     }
     .title {
       font-size: 22px;
       font-weight: 700;
-      letter-spacing: 0.2px;
+      letter-spacing: 0;
+      color: #f3f4f6;
+    }
+    .subtitle {
+      margin: 4px 0 0 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+      max-width: 980px;
     }
     .meta {
       font-size: 12px;
@@ -296,191 +434,391 @@ function renderMonitorPageHtml(options = {}) {
       gap: 10px;
       align-items: center;
       flex-wrap: wrap;
+      justify-content: flex-end;
     }
     .dot {
-      width: 9px;
-      height: 9px;
+      width: 10px;
+      height: 10px;
       border-radius: 999px;
       display: inline-block;
       background: var(--warn);
-      box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.8);
-      animation: pulse 1.8s infinite;
+      border: 1px solid #d97706;
     }
-    .dot.ok { background: var(--ok); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.8); }
-    .dot.err { background: var(--err); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.8); }
-    @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
-      70% { box-shadow: 0 0 0 10px rgba(245, 158, 11, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+    .dot.ok { background: var(--good); border-color: #16a34a; }
+    .dot.err { background: var(--bad); border-color: #dc2626; }
+    .links {
+      margin-bottom: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+    }
+    .links a {
+      color: #d8d9da;
+      text-decoration: none;
+      border: 1px solid #3b424f;
+      background: #232830;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-weight: 600;
+    }
+    .links a:hover {
+      border-color: #515a6a;
+      background: #2b313b;
+      color: #fff;
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(6, minmax(130px, 1fr));
+      grid-template-columns: repeat(8, minmax(120px, 1fr));
       gap: 8px;
       margin-bottom: 10px;
     }
     .card {
-      background: linear-gradient(180deg, var(--panel-2), var(--panel));
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 9px 10px;
-      min-height: 68px;
+      background: var(--panel);
+      border-radius: 4px;
+      padding: 10px;
+      min-height: 92px;
     }
     .card .k {
       color: var(--muted);
       font-size: 11px;
-      margin-bottom: 6px;
+      margin-bottom: 7px;
       text-transform: uppercase;
-      letter-spacing: 0.6px;
+      letter-spacing: 0.45px;
     }
     .card .v {
+      font-size: 20px;
       font-weight: 700;
-      font-size: 21px;
-      color: #f8fafc;
+      color: #f3f4f6;
+      margin-bottom: 4px;
+      line-height: 1.1;
     }
-    .panels {
-      display: grid;
-      grid-template-columns: 1.2fr 1fr;
-      gap: 10px;
+    .card .note {
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted);
     }
     .panel {
-      background: linear-gradient(180deg, var(--panel-2), var(--panel));
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
+      background: var(--panel);
+      border-radius: 4px;
+      padding: 12px;
     }
     .panel h3 {
       margin: 0 0 8px 0;
       font-size: 13px;
       font-weight: 700;
-      color: #cbd5e1;
+      color: #f3f4f6;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.45px;
+    }
+    .panel p {
+      margin: 0 0 10px 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .timeline-panel {
+      margin-bottom: 10px;
+    }
+    .timeline-wrap {
+      border: 1px solid #3a404d;
+      background: #161a21;
+      border-radius: 4px;
+      padding: 8px;
     }
     canvas {
       width: 100%;
-      height: 230px;
-      border-radius: 8px;
-      background: #0b1220;
-      border: 1px solid #243244;
+      min-height: 280px;
       display: block;
+      border-radius: 4px;
+      background: #161a21;
+      border: 1px solid #303540;
+    }
+    .legend {
+      margin-top: 8px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .legend .item::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 6px;
+      vertical-align: -1px;
+    }
+    .legend .req::before { background: #6ed0e0; }
+    .legend .queued::before { background: #ef843c; }
+    .legend .sent::before { background: #7eb26d; }
+    .legend .failed::before { background: #e24d42; }
+    .lower {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 10px;
+      align-items: start;
+    }
+    .runtime-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--text);
+    }
+    .runtime-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #333944;
+      padding-bottom: 6px;
+    }
+    .runtime-row:last-child { border-bottom: 0; padding-bottom: 0; }
+    .runtime-row .label { color: var(--muted); }
+    .runtime-row .value { color: #f3f4f6; font-weight: 700; text-align: right; }
+    .runtime-row .value.warn { color: #f2cc0c; }
+    .runtime-row .value.bad { color: #f2495c; }
+    .event-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .event-toolbar input,
+    .event-toolbar select {
+      background: #161a21;
+      color: var(--text);
+      border: 1px solid #3a404d;
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 12px;
+      min-height: 34px;
+    }
+    .event-toolbar input {
+      flex: 1 1 260px;
+      min-width: 180px;
     }
     .table-wrap {
-      max-height: 380px;
+      max-height: 580px;
       overflow: auto;
-      border-radius: 8px;
-      border: 1px solid #243244;
+      border-radius: 4px;
+      border: 1px solid #3a404d;
+      background: #161a21;
     }
     table {
       width: 100%;
       border-collapse: collapse;
+      min-width: 980px;
       font-size: 12px;
     }
     thead th {
       position: sticky;
       top: 0;
       text-align: left;
-      background: #0b1220;
-      color: #94a3b8;
-      border-bottom: 1px solid #334155;
-      padding: 8px;
+      background: #20252f;
+      color: #c5cad3;
+      border-bottom: 1px solid #3a404d;
+      padding: 9px 8px;
+      font-size: 11px;
       font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.45px;
     }
     tbody td {
-      padding: 7px 8px;
-      border-bottom: 1px solid #1f2937;
-      color: #e2e8f0;
+      padding: 8px;
+      border-bottom: 1px solid #323844;
+      color: #d8d9da;
       vertical-align: top;
       word-break: break-word;
     }
-    tbody tr:hover td { background: #111827; }
-    .lvl-ERROR { color: #fca5a5; }
-    .lvl-WARN { color: #fcd34d; }
-    .lvl-INFO { color: #86efac; }
-    .muted { color: var(--muted); }
-    .links {
-      margin-top: 8px;
-      font-size: 12px;
-      color: var(--muted);
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
+    tbody tr:nth-child(even) td { background: #181c23; }
+    tbody tr:hover td { background: #232a34; }
+    .lvl-ERROR { color: #f2495c; font-weight: 700; }
+    .lvl-WARN { color: #eab839; font-weight: 700; }
+    .lvl-INFO { color: #7eb26d; font-weight: 700; }
+    .lvl-DEBUG { color: #6ed0e0; font-weight: 700; }
+    .trace {
+      font-family: "Courier New", monospace;
+      color: #c5cad3;
+      font-size: 11px;
     }
-    .links a { color: var(--accent); text-decoration: none; }
-    .links a:hover { text-decoration: underline; }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .chip {
+      border: 1px solid #414957;
+      background: #2a303b;
+      color: #d8d9da;
+      border-radius: 12px;
+      padding: 3px 8px;
+      font-size: 10px;
+      white-space: nowrap;
+    }
+    pre.json {
+      margin: 0;
+      padding: 8px;
+      border: 1px solid #3a404d;
+      border-radius: 4px;
+      background: #11161f;
+      color: #d8d9da;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .json-key { color: var(--json-key); }
+    .json-string { color: var(--json-string); }
+    .json-number { color: var(--json-number); }
+    .json-boolean { color: var(--json-bool); }
+    .json-null { color: var(--json-null); }
+    .empty { color: var(--muted); font-size: 12px; padding: 12px; }
+    @media (max-width: 1320px) {
+      .grid { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
+      .lower { grid-template-columns: 1fr; }
+    }
     @media (max-width: 980px) {
-      .grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
-      .panels { grid-template-columns: 1fr; }
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+    }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      canvas { min-height: 240px; }
+      .topbar { height: auto; padding: 8px 10px; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="topbar">
-      <div class="title">${title}</div>
-      <div class="meta">
-        <span id="conn-dot" class="dot"></span>
-        <span id="conn-text">Connecting stream...</span>
-        <span id="updated">Updated: -</span>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">MF</div>
+        <span>mailFastApi</span>
       </div>
-    </div>
+      <nav class="side-nav">
+        <a class="active" href="#"><span>▦</span><span>Dashboards</span></a>
+        <a href="${metricsViewPath}" target="_blank" rel="noreferrer"><span>◫</span><span>Metrics View</span></a>
+        <a href="${rawViewPath}" target="_blank" rel="noreferrer"><span>{ }</span><span>Raw JSON View</span></a>
+        <a href="${metricsPath}" target="_blank" rel="noreferrer"><span>≡</span><span>Prometheus</span></a>
+        <a href="${statsPath}" target="_blank" rel="noreferrer"><span>⎘</span><span>Snapshot JSON</span></a>
+      </nav>
+    </aside>
 
-    <section class="grid">
-      <article class="card"><div class="k">Send Requests</div><div id="sendRequests" class="v">0</div></article>
-      <article class="card"><div class="k">Mail Queued</div><div id="mailQueued" class="v">0</div></article>
-      <article class="card"><div class="k">Mail Sent</div><div id="mailSent" class="v">0</div></article>
-      <article class="card"><div class="k">Mail Failed</div><div id="mailFailed" class="v">0</div></article>
-      <article class="card"><div class="k">Queue Depth</div><div id="queueDepth" class="v">0</div></article>
-      <article class="card"><div class="k">Active Jobs</div><div id="activeJobs" class="v">0</div></article>
-    </section>
-
-    <section class="panels">
-      <article class="panel">
-        <h3>Timeline (per minute)</h3>
-        <canvas id="timelineChart" width="820" height="260"></canvas>
-      </article>
-      <article class="panel">
-        <h3>Runtime</h3>
-        <div style="font-size:13px;line-height:1.8;">
-          <div><span class="muted">Uptime:</span> <strong id="uptime">-</strong></div>
-          <div><span class="muted">Auth Mode:</span> <strong id="authMode">-</strong></div>
-          <div><span class="muted">Queue Backend:</span> <strong id="queueBackend">-</strong></div>
-          <div><span class="muted">Port:</span> <strong id="port">-</strong></div>
-          <div><span class="muted">Token Issued:</span> <strong id="tokenIssued">0</strong></div>
-          <div><span class="muted">Retries:</span> <strong id="mailRetry">0</strong></div>
-          <div><span class="muted">Total Logs:</span> <strong id="logsTotal">0</strong></div>
-          <div><span class="muted">Errors:</span> <strong id="errorsTotal">0</strong></div>
+    <main class="main">
+      <header class="topbar">
+        <div class="toolbar-right">
+          <span id="conn-dot" class="dot"></span>
+          <span id="conn-text">Connecting stream...</span>
+          <span id="updated">Updated: -</span>
         </div>
-        <div class="links">
-          <a href="${metricsPath}" target="_blank" rel="noreferrer">Prometheus Metrics</a>
-          <a href="${statsPath}" target="_blank" rel="noreferrer">Raw JSON</a>
-        </div>
-      </article>
-    </section>
+      </header>
 
-    <section class="panel" style="margin-top:10px;">
-      <h3>Recent Events</h3>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th style="width:165px;">Time</th>
-              <th style="width:70px;">Level</th>
-              <th style="width:180px;">Event</th>
-              <th style="width:70px;">Source</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody id="eventsBody"></tbody>
-        </table>
+      <div class="wrap">
+        <div class="title-wrap">
+          <div class="title">${title}</div>
+          <p class="subtitle">Grafana inspired monitoring layout with live queue and delivery telemetry.</p>
+        </div>
+
+       
+
+        <section class="grid">
+          <article class="card"><div class="k">Send Requests</div><div id="sendRequests" class="v">0</div><div class="note">Inbound /send call count.</div></article>
+          <article class="card"><div class="k">Mail Queued</div><div id="mailQueued" class="v">0</div><div class="note">Jobs accepted into queue.</div></article>
+          <article class="card"><div class="k">Mail Sent</div><div id="mailSent" class="v">0</div><div class="note">Successfully delivered mails.</div></article>
+          <article class="card"><div class="k">Mail Failed</div><div id="mailFailed" class="v">0</div><div class="note">Failed after final retry.</div></article>
+          <article class="card"><div class="k">Queue Depth</div><div id="queueDepth" class="v">0</div><div class="note">Current pending queue load.</div></article>
+          <article class="card"><div class="k">Active Jobs</div><div id="activeJobs" class="v">0</div><div class="note">Worker jobs in progress.</div></article>
+          <article class="card"><div class="k">Success Rate</div><div id="successRate" class="v">-</div><div class="note">mailSent / (mailSent + mailFailed)</div></article>
+          <article class="card"><div class="k">Error Ratio</div><div id="errorRatio" class="v">-</div><div class="note">internalError / total logs</div></article>
+        </section>
+
+        <section class="panel timeline-panel">
+          <h3>Timeline</h3>
+          <p>Per-minute request, queued, sent, and failed trend across the full page width.</p>
+          <div class="timeline-wrap">
+            <canvas id="timelineChart" width="1460" height="320"></canvas>
+          </div>
+          <div class="legend">
+            <span class="item req">Send Requests</span>
+            <span class="item queued">Mail Queued</span>
+            <span class="item sent">Mail Sent</span>
+            <span class="item failed">Mail Failed</span>
+          </div>
+        </section>
+
+        <section class="lower">
+          <article class="panel">
+            <h3>Runtime</h3>
+            <p>Live service state and counters from current process memory.</p>
+            <div class="runtime-grid">
+              <div class="runtime-row"><span class="label">Uptime</span><span id="uptime" class="value">-</span></div>
+              <div class="runtime-row"><span class="label">Auth Mode</span><span id="authMode" class="value">-</span></div>
+              <div class="runtime-row"><span class="label">Queue Backend</span><span id="queueBackend" class="value">-</span></div>
+              <div class="runtime-row"><span class="label">API Port</span><span id="apiPort" class="value">-</span></div>
+              <div class="runtime-row"><span class="label">Monitor Port</span><span id="monitorPort" class="value">-</span></div>
+              <div class="runtime-row"><span class="label">Token Issued</span><span id="tokenIssued" class="value">0</span></div>
+              <div class="runtime-row"><span class="label">Retries</span><span id="mailRetry" class="value warn">0</span></div>
+              <div class="runtime-row"><span class="label">Total Logs</span><span id="logsTotal" class="value">0</span></div>
+              <div class="runtime-row"><span class="label">Errors</span><span id="errorsTotal" class="value bad">0</span></div>
+              <div class="runtime-row"><span class="label">INFO Logs</span><span id="levelInfo" class="value">0</span></div>
+              <div class="runtime-row"><span class="label">WARN Logs</span><span id="levelWarn" class="value warn">0</span></div>
+              <div class="runtime-row"><span class="label">ERROR Logs</span><span id="levelError" class="value bad">0</span></div>
+              <div class="runtime-row"><span class="label">DEBUG Logs</span><span id="levelDebug" class="value">0</span></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>Events</h3>
+            <p>Detailed event stream with filters, trace ids, and formatted JSON details.</p>
+            <div class="event-toolbar">
+              <input id="searchInput" type="text" placeholder="Filter event, source, trace, or JSON detail..." />
+              <select id="levelFilter">
+                <option value="ALL">All Levels</option>
+                <option value="ERROR">ERROR</option>
+                <option value="WARN">WARN</option>
+                <option value="INFO">INFO</option>
+                <option value="DEBUG">DEBUG</option>
+              </select>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:180px;">Time</th>
+                    <th style="width:80px;">Level</th>
+                    <th style="width:190px;">Event</th>
+                    <th style="width:90px;">Source</th>
+                    <th style="width:170px;">Trace</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody id="eventsBody"></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
       </div>
-    </section>
+    </main>
   </div>
 
   <script>
     const statsPath = "${statsPath}";
     const streamPath = "${streamPath}";
-    const state = { snapshot: null };
+    const state = {
+      snapshot: null,
+      levelFilter: "ALL",
+      textFilter: "",
+    };
 
     const ids = {
       sendRequests: document.getElementById("sendRequests"),
@@ -489,23 +827,42 @@ function renderMonitorPageHtml(options = {}) {
       mailFailed: document.getElementById("mailFailed"),
       queueDepth: document.getElementById("queueDepth"),
       activeJobs: document.getElementById("activeJobs"),
+      successRate: document.getElementById("successRate"),
+      errorRatio: document.getElementById("errorRatio"),
       uptime: document.getElementById("uptime"),
       authMode: document.getElementById("authMode"),
       queueBackend: document.getElementById("queueBackend"),
-      port: document.getElementById("port"),
+      apiPort: document.getElementById("apiPort"),
+      monitorPort: document.getElementById("monitorPort"),
       tokenIssued: document.getElementById("tokenIssued"),
       mailRetry: document.getElementById("mailRetry"),
       logsTotal: document.getElementById("logsTotal"),
       errorsTotal: document.getElementById("errorsTotal"),
+      levelInfo: document.getElementById("levelInfo"),
+      levelWarn: document.getElementById("levelWarn"),
+      levelError: document.getElementById("levelError"),
+      levelDebug: document.getElementById("levelDebug"),
       eventsBody: document.getElementById("eventsBody"),
       updated: document.getElementById("updated"),
       connDot: document.getElementById("conn-dot"),
       connText: document.getElementById("conn-text"),
       chart: document.getElementById("timelineChart"),
+      searchInput: document.getElementById("searchInput"),
+      levelFilter: document.getElementById("levelFilter"),
     };
 
     let es = null;
     let pollingTimer = null;
+
+    ids.searchInput.addEventListener("input", () => {
+      state.textFilter = String(ids.searchInput.value || "").trim().toLowerCase();
+      renderEvents((state.snapshot && state.snapshot.recent) || []);
+    });
+
+    ids.levelFilter.addEventListener("change", () => {
+      state.levelFilter = ids.levelFilter.value || "ALL";
+      renderEvents((state.snapshot && state.snapshot.recent) || []);
+    });
 
     connectSse();
     refreshNow();
@@ -572,6 +929,7 @@ function renderMonitorPageHtml(options = {}) {
       state.snapshot = snapshot;
       const t = snapshot.totals || {};
       const r = snapshot.runtime || {};
+      const lvl = snapshot.levels || {};
 
       ids.sendRequests.textContent = n(t.sendRequestsTotal);
       ids.mailQueued.textContent = n(t.mailQueuedTotal);
@@ -579,14 +937,26 @@ function renderMonitorPageHtml(options = {}) {
       ids.mailFailed.textContent = n(t.mailFailedTotal);
       ids.queueDepth.textContent = n(r.queueDepth);
       ids.activeJobs.textContent = n(r.activeJobs);
+      ids.successRate.textContent = percent(
+        t.mailSentTotal,
+        Number(t.mailSentTotal || 0) + Number(t.mailFailedTotal || 0),
+      );
+      ids.errorRatio.textContent = percent(t.internalErrorTotal, t.logsTotal);
       ids.uptime.textContent = sec(snapshot.uptimeSec);
       ids.authMode.textContent = r.authMode || "-";
       ids.queueBackend.textContent = r.queueBackend || "-";
-      ids.port.textContent = n(r.port);
+      ids.apiPort.textContent = n(r.port);
+      ids.monitorPort.textContent = n(
+        r.monitorPort === null || r.monitorPort === undefined ? r.port : r.monitorPort,
+      );
       ids.tokenIssued.textContent = n(t.authTokenIssuedTotal);
       ids.mailRetry.textContent = n(t.mailRetryTotal);
       ids.logsTotal.textContent = n(t.logsTotal);
       ids.errorsTotal.textContent = n(t.internalErrorTotal);
+      ids.levelInfo.textContent = n(lvl.INFO);
+      ids.levelWarn.textContent = n(lvl.WARN);
+      ids.levelError.textContent = n(lvl.ERROR);
+      ids.levelDebug.textContent = n(lvl.DEBUG);
       ids.updated.textContent = "Updated: " + (snapshot.generatedAt || "-");
 
       renderEvents(snapshot.recent || []);
@@ -594,17 +964,97 @@ function renderMonitorPageHtml(options = {}) {
     }
 
     function renderEvents(entries) {
-      const rows = entries.slice().reverse().slice(0, 120).map((entry) => {
-        const lvl = esc(entry.level || "INFO");
-        return "<tr>" +
-          "<td>" + esc(entry.timestamp || "") + "</td>" +
-          "<td class='lvl-" + lvl + "'>" + lvl + "</td>" +
-          "<td>" + esc(entry.event || "") + "</td>" +
-          "<td>" + esc(entry.source || "") + "</td>" +
-          "<td><code>" + esc(JSON.stringify(entry.details || {})) + "</code></td>" +
-          "</tr>";
-      }).join("");
-      ids.eventsBody.innerHTML = rows || "<tr><td colspan='5' class='muted'>No events yet</td></tr>";
+      const source = entries.slice().reverse();
+      const filtered = source
+        .filter((entry) => matchEntry(entry, state.levelFilter, state.textFilter))
+        .slice(0, 200);
+
+      if (filtered.length === 0) {
+        ids.eventsBody.innerHTML =
+          "<tr><td colspan='6' class='empty'>No events for current filters.</td></tr>";
+        return;
+      }
+
+      ids.eventsBody.innerHTML = filtered
+        .map((entry) => {
+          const level = String(entry.level || "INFO").toUpperCase();
+          const details = entry.details && typeof entry.details === "object" ? entry.details : {};
+          const trace = entry.traceId || details.traceId || "-";
+          const chips = summarizeDetails(details)
+            .map(
+              (item) =>
+                "<span class='chip'>" + esc(item.label) + ": " + esc(item.value) + "</span>",
+            )
+            .join("");
+          const detailsJson = "<pre class='json'>" + highlightJson(details) + "</pre>";
+          return (
+            "<tr>" +
+            "<td>" +
+            esc(entry.timestamp || "") +
+            "</td>" +
+            "<td class='lvl-" +
+            esc(level) +
+            "'>" +
+            esc(level) +
+            "</td>" +
+            "<td>" +
+            esc(entry.event || "") +
+            "</td>" +
+            "<td>" +
+            esc(entry.source || "") +
+            "</td>" +
+            "<td class='trace'>" +
+            esc(shortTrace(trace)) +
+            "</td>" +
+            "<td><div class='chips'>" +
+            chips +
+            "</div>" +
+            detailsJson +
+            "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+    }
+
+    function matchEntry(entry, levelFilter, textFilter) {
+      const level = String(entry && entry.level ? entry.level : "INFO").toUpperCase();
+      if (levelFilter && levelFilter !== "ALL" && level !== levelFilter) {
+        return false;
+      }
+      if (!textFilter) {
+        return true;
+      }
+      const haystack = [
+        entry && entry.timestamp ? String(entry.timestamp) : "",
+        entry && entry.event ? String(entry.event) : "",
+        entry && entry.source ? String(entry.source) : "",
+        entry && entry.traceId ? String(entry.traceId) : "",
+        safeJson(entry && entry.details ? entry.details : {}, false),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(textFilter);
+    }
+
+    function summarizeDetails(details) {
+      const items = [];
+      pushDetail(items, "path", details.path);
+      pushDetail(items, "method", details.method);
+      pushDetail(items, "jobId", details.jobId);
+      pushDetail(items, "queueDepth", details.queueDepth);
+      pushDetail(items, "status", details.status);
+      pushDetail(items, "clientId", details.clientId);
+      pushDetail(items, "authSub", details.authSub);
+      if (items.length === 0) {
+        items.push({ label: "info", value: "no key detail fields" });
+      }
+      return items.slice(0, 6);
+    }
+
+    function pushDetail(items, label, value) {
+      if (value === null || value === undefined || value === "") return;
+      items.push({ label, value: String(value) });
     }
 
     function renderTimeline(points) {
@@ -612,43 +1062,49 @@ function renderMonitorPageHtml(options = {}) {
       const ctx = canvas.getContext("2d");
       const w = canvas.width;
       const h = canvas.height;
-      const p = 30;
+      const p = 34;
 
       ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = "#0b1220";
+      ctx.fillStyle = "#161a21";
       ctx.fillRect(0, 0, w, h);
 
       if (!points || points.length === 0) {
-        ctx.fillStyle = "#9ca3af";
+        ctx.fillStyle = "#9fa4ad";
         ctx.font = "12px Segoe UI";
-        ctx.fillText("No timeline data yet", 12, 20);
+        ctx.fillText("No timeline data yet", 12, 22);
         return;
       }
 
       const values = points.map((x) =>
         Math.max(
           Number(x.sendRequests || 0),
+          Number(x.mailQueued || 0),
           Number(x.mailSent || 0),
           Number(x.mailFailed || 0),
         ),
       );
       const maxY = Math.max(1, ...values);
+      const midY = Math.max(0, Math.ceil(maxY / 2));
 
-      drawAxis(ctx, w, h, p, maxY);
-      drawLine(ctx, points, w, h, p, maxY, "sendRequests", "#22d3ee");
-      drawLine(ctx, points, w, h, p, maxY, "mailSent", "#22c55e");
-      drawLine(ctx, points, w, h, p, maxY, "mailFailed", "#ef4444");
-
-      drawLegend(ctx, w, h, [
-        ["Send Requests", "#22d3ee"],
-        ["Mail Sent", "#22c55e"],
-        ["Mail Failed", "#ef4444"],
-      ]);
+      drawAxis(ctx, w, h, p, maxY, midY);
+      drawLine(ctx, points, w, h, p, maxY, "sendRequests", "#6ed0e0");
+      drawLine(ctx, points, w, h, p, maxY, "mailQueued", "#ef843c");
+      drawLine(ctx, points, w, h, p, maxY, "mailSent", "#7eb26d");
+      drawLine(ctx, points, w, h, p, maxY, "mailFailed", "#e24d42");
     }
 
-    function drawAxis(ctx, w, h, p, maxY) {
-      ctx.strokeStyle = "#334155";
+    function drawAxis(ctx, w, h, p, maxY, midY) {
+      ctx.strokeStyle = "#3a404d";
       ctx.lineWidth = 1;
+
+      for (let i = 0; i < 4; i += 1) {
+        const y = p + ((h - p * 2) / 3) * i;
+        ctx.beginPath();
+        ctx.moveTo(p, y);
+        ctx.lineTo(w - p, y);
+        ctx.stroke();
+      }
+
       ctx.beginPath();
       ctx.moveTo(p, h - p);
       ctx.lineTo(w - p, h - p);
@@ -656,10 +1112,11 @@ function renderMonitorPageHtml(options = {}) {
       ctx.lineTo(p, h - p);
       ctx.stroke();
 
-      ctx.fillStyle = "#94a3b8";
+      ctx.fillStyle = "#9fa4ad";
       ctx.font = "11px Segoe UI";
-      ctx.fillText(String(maxY), 6, p + 4);
-      ctx.fillText("0", 14, h - p + 4);
+      ctx.fillText(String(maxY), 8, p + 4);
+      ctx.fillText(String(midY), 10, p + (h - p * 2) / 2 + 4);
+      ctx.fillText("0", 18, h - p + 4);
     }
 
     function drawLine(ctx, points, w, h, p, maxY, key, color) {
@@ -681,23 +1138,61 @@ function renderMonitorPageHtml(options = {}) {
       ctx.stroke();
     }
 
-    function drawLegend(ctx, w, h, items) {
-      let x = 10;
-      const y = h - 8;
-      ctx.font = "11px Segoe UI";
-      for (const [label, color] of items) {
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y - 8, 10, 3);
-        x += 14;
-        ctx.fillStyle = "#cbd5e1";
-        ctx.fillText(label, x, y);
-        x += ctx.measureText(label).width + 14;
+    function highlightJson(value) {
+      const json = safeJson(value, true);
+      const tokenRx =
+        /("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*"\\s*:?)|("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*")|\\btrue\\b|\\bfalse\\b|\\bnull\\b|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?/g;
+      let output = "";
+      let cursor = 0;
+      let match = tokenRx.exec(json);
+
+      while (match) {
+        const token = match[0];
+        const index = match.index;
+        output += esc(json.slice(cursor, index));
+        if (token.endsWith(":")) {
+          output += "<span class='json-key'>" + esc(token) + "</span>";
+        } else if (token.startsWith('"')) {
+          output += "<span class='json-string'>" + esc(token) + "</span>";
+        } else if (token === "true" || token === "false") {
+          output += "<span class='json-boolean'>" + esc(token) + "</span>";
+        } else if (token === "null") {
+          output += "<span class='json-null'>" + esc(token) + "</span>";
+        } else {
+          output += "<span class='json-number'>" + esc(token) + "</span>";
+        }
+        cursor = index + token.length;
+        match = tokenRx.exec(json);
       }
+
+      output += esc(json.slice(cursor));
+      return output;
+    }
+
+    function safeJson(value, pretty) {
+      try {
+        return JSON.stringify(value, null, pretty ? 2 : 0);
+      } catch (error) {
+        return String(value);
+      }
+    }
+
+    function shortTrace(value) {
+      const text = String(value || "-");
+      if (text.length <= 18) return text;
+      return text.slice(0, 8) + "..." + text.slice(-6);
     }
 
     function n(value) {
       if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
       return Number(value).toLocaleString("en-US");
+    }
+
+    function percent(part, total) {
+      const p = Number(part);
+      const t = Number(total);
+      if (!Number.isFinite(p) || !Number.isFinite(t) || t <= 0) return "-";
+      return ((p / t) * 100).toFixed(2) + "%";
     }
 
     function sec(value) {
@@ -707,6 +1202,620 @@ function renderMonitorPageHtml(options = {}) {
       const m = Math.floor((s % 3600) / 60);
       const ss = s % 60;
       return h + "h " + m + "m " + ss + "s";
+    }
+
+    function esc(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+  </script>
+</body>
+</html>`;
+}
+
+function renderMonitorMetricsPageHtml(options = {}) {
+  const title = escapeHtml(options.title || "mailFastApi Prometheus Metrics");
+  const metricsPath = escapeHtml(options.metricsPath || "/metrics");
+  const monitorPath = escapeHtml(options.monitorPath || "/monitor");
+  const rawViewPath = escapeHtml(options.rawViewPath || "/monitor/raw-view");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title}</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&display=swap");
+    :root {
+      --bg: #070b14;
+      --panel: #0e1422;
+      --line: #1b2640;
+      --text: #e5ecff;
+      --muted: #93a0be;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Public Sans", "Segoe UI", Tahoma, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 0% -20%, #14223b 0%, rgba(20, 34, 59, 0) 60%),
+        radial-gradient(1000px 500px at 100% -20%, #0f2044 0%, rgba(15, 32, 68, 0) 65%),
+        var(--bg);
+      color: var(--text);
+    }
+    .page {
+      width: min(1400px, 96vw);
+      margin: 18px auto 26px auto;
+    }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .title {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 800;
+      color: #f1f5ff;
+    }
+    .subtitle {
+      margin: 6px 0 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .links {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .links a {
+      text-decoration: none;
+      color: #dbeafe;
+      border: 1px solid #233354;
+      background: #0f1a31;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #121c33, #0f172b);
+      border-radius: 12px;
+      padding: 10px;
+    }
+    .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.45px; }
+    .v { font-size: 22px; font-weight: 800; color: #f8fbff; }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #10192a, var(--panel));
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .panel h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.55px;
+      color: #dbeafe;
+    }
+    .panel p {
+      margin: 0 0 10px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .table-wrap {
+      border: 1px solid #213252;
+      border-radius: 10px;
+      overflow: auto;
+      max-height: 520px;
+      background: #0a1222;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+      font-size: 12px;
+    }
+    thead th {
+      position: sticky;
+      top: 0;
+      background: #0f1a31;
+      color: #b8c8e8;
+      border-bottom: 1px solid #23385c;
+      text-align: left;
+      padding: 9px 8px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.45px;
+    }
+    tbody td {
+      border-bottom: 1px solid #182844;
+      padding: 8px;
+      color: #d9e5ff;
+      vertical-align: top;
+      word-break: break-word;
+    }
+    tbody tr:hover td { background: #0f1a31; }
+    pre {
+      margin: 0;
+      padding: 10px;
+      border: 1px solid #253a5f;
+      border-radius: 10px;
+      background: #0a1222;
+      color: #dbeafe;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 320px;
+      overflow: auto;
+    }
+    @media (max-width: 950px) {
+      .grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <div>
+        <h1 class="title">${title}</h1>
+        <p class="subtitle">Formatted Prometheus explorer with metric types, labels, values, and raw text.</p>
+      </div>
+      <nav class="links">
+        <a href="${monitorPath}" target="_blank" rel="noreferrer">Live Monitor</a>
+        <a href="${rawViewPath}" target="_blank" rel="noreferrer">Raw JSON View</a>
+        <a href="${metricsPath}" target="_blank" rel="noreferrer">Plain Prometheus</a>
+      </nav>
+    </header>
+
+    <section class="grid">
+      <article class="card"><div class="k">Series</div><div id="seriesCount" class="v">0</div></article>
+      <article class="card"><div class="k">Counters</div><div id="counterCount" class="v">0</div></article>
+      <article class="card"><div class="k">Gauges</div><div id="gaugeCount" class="v">0</div></article>
+      <article class="card"><div class="k">Last Update</div><div id="updated" class="v" style="font-size:14px;">-</div></article>
+    </section>
+
+    <section class="panel">
+      <h3>Parsed Metrics Table</h3>
+      <p>Lines grouped by metric name, type, labels, and value.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:280px;">Metric</th>
+              <th style="width:120px;">Type</th>
+              <th style="width:300px;">Labels</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody id="metricsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Raw Prometheus Text</h3>
+      <pre id="rawText">Loading...</pre>
+    </section>
+  </div>
+
+  <script>
+    const metricsPath = "${metricsPath}";
+    const ids = {
+      seriesCount: document.getElementById("seriesCount"),
+      counterCount: document.getElementById("counterCount"),
+      gaugeCount: document.getElementById("gaugeCount"),
+      updated: document.getElementById("updated"),
+      metricsBody: document.getElementById("metricsBody"),
+      rawText: document.getElementById("rawText"),
+    };
+
+    load();
+    setInterval(() => { void load(); }, 5000);
+
+    async function load() {
+      try {
+        const response = await fetch(metricsPath, { cache: "no-store" });
+        if (!response.ok) throw new Error("Failed to fetch metrics");
+        const text = await response.text();
+        ids.rawText.textContent = text || "";
+        const rows = parsePrometheus(text || "");
+        renderRows(rows);
+        ids.updated.textContent = new Date().toISOString();
+      } catch (error) {
+        ids.rawText.textContent = String(error && error.message ? error.message : "Unknown metrics error");
+      }
+    }
+
+    function parsePrometheus(text) {
+      const lines = String(text || "").split("\\n");
+      const typeByMetric = new Map();
+      const rows = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("# TYPE ")) {
+          const parts = trimmed.split(/\\s+/);
+          if (parts.length >= 4) typeByMetric.set(parts[2], parts[3]);
+        }
+      }
+
+      const pattern = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\\{[^}]*\\})?\\s+([^\\s]+)$/;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const match = pattern.exec(trimmed);
+        if (!match) continue;
+        rows.push({
+          name: match[1],
+          type: typeByMetric.get(match[1]) || "-",
+          labels: match[2] || "",
+          value: match[3],
+        });
+      }
+      return rows;
+    }
+
+    function renderRows(rows) {
+      const counterCount = rows.filter((x) => x.type === "counter").length;
+      const gaugeCount = rows.filter((x) => x.type === "gauge").length;
+      ids.seriesCount.textContent = rows.length.toLocaleString("en-US");
+      ids.counterCount.textContent = counterCount.toLocaleString("en-US");
+      ids.gaugeCount.textContent = gaugeCount.toLocaleString("en-US");
+
+      if (rows.length === 0) {
+        ids.metricsBody.innerHTML = "<tr><td colspan='4' style='padding:10px;color:#93a0be;'>No metric series detected.</td></tr>";
+        return;
+      }
+
+      ids.metricsBody.innerHTML = rows
+        .map(
+          (row) =>
+            "<tr><td>" +
+            esc(row.name) +
+            "</td><td>" +
+            esc(row.type) +
+            "</td><td>" +
+            esc(row.labels || "-") +
+            "</td><td>" +
+            esc(row.value) +
+            "</td></tr>",
+        )
+        .join("");
+    }
+
+    function esc(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+  </script>
+</body>
+</html>`;
+}
+
+function renderMonitorRawPageHtml(options = {}) {
+  const title = escapeHtml(options.title || "mailFastApi Raw Snapshot");
+  const statsPath = escapeHtml(options.statsPath || "/monitor/stats");
+  const monitorPath = escapeHtml(options.monitorPath || "/monitor");
+  const metricsViewPath = escapeHtml(options.metricsViewPath || "/monitor/metrics-view");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${title}</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&display=swap");
+    :root {
+      --bg: #070b14;
+      --panel: #0e1422;
+      --line: #1b2640;
+      --text: #e5ecff;
+      --muted: #93a0be;
+      --json-key: #7dd3fc;
+      --json-string: #86efac;
+      --json-number: #fcd34d;
+      --json-bool: #f9a8d4;
+      --json-null: #c4b5fd;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Public Sans", "Segoe UI", Tahoma, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 0% -20%, #14223b 0%, rgba(20, 34, 59, 0) 60%),
+        radial-gradient(1000px 500px at 100% -20%, #0f2044 0%, rgba(15, 32, 68, 0) 65%),
+        var(--bg);
+      color: var(--text);
+    }
+    .page {
+      width: min(1400px, 96vw);
+      margin: 18px auto 26px auto;
+    }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .title {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 800;
+      color: #f1f5ff;
+    }
+    .subtitle {
+      margin: 6px 0 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .links {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .links a {
+      text-decoration: none;
+      color: #dbeafe;
+      border: 1px solid #233354;
+      background: #0f1a31;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #121c33, #0f172b);
+      border-radius: 12px;
+      padding: 10px;
+    }
+    .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.45px; }
+    .v { font-size: 20px; font-weight: 800; color: #f8fbff; line-height: 1.2; word-break: break-word; }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #10192a, var(--panel));
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .panel h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.55px;
+      color: #dbeafe;
+    }
+    .panel p {
+      margin: 0 0 10px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .runtime-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .runtime-item {
+      border: 1px solid #223457;
+      background: #0a1222;
+      border-radius: 8px;
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      font-size: 12px;
+    }
+    .runtime-item .label { color: var(--muted); }
+    .runtime-item .value { color: #f8fbff; font-weight: 700; }
+    pre {
+      margin: 0;
+      padding: 10px;
+      border: 1px solid #253a5f;
+      border-radius: 10px;
+      background: #071225;
+      color: #dbeafe;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 560px;
+      overflow: auto;
+    }
+    .json-key { color: var(--json-key); }
+    .json-string { color: var(--json-string); }
+    .json-number { color: var(--json-number); }
+    .json-boolean { color: var(--json-bool); }
+    .json-null { color: var(--json-null); }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+      .runtime-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <div>
+        <h1 class="title">${title}</h1>
+        <p class="subtitle">Formatted monitor snapshot with runtime summary and syntax-highlighted JSON.</p>
+      </div>
+      <nav class="links">
+        <a href="${monitorPath}" target="_blank" rel="noreferrer">Live Monitor</a>
+        <a href="${metricsViewPath}" target="_blank" rel="noreferrer">Metrics View</a>
+        <a href="${statsPath}" target="_blank" rel="noreferrer">Plain Snapshot JSON</a>
+      </nav>
+    </header>
+
+    <section class="grid">
+      <article class="card"><div class="k">Generated At</div><div id="generatedAt" class="v">-</div></article>
+      <article class="card"><div class="k">Uptime</div><div id="uptime" class="v">-</div></article>
+      <article class="card"><div class="k">Timeline Points</div><div id="timelineCount" class="v">0</div></article>
+      <article class="card"><div class="k">Recent Events</div><div id="recentCount" class="v">0</div></article>
+    </section>
+
+    <section class="panel">
+      <h3>Runtime Summary</h3>
+      <p>Overview from snapshot.runtime, snapshot.totals, and snapshot.levels.</p>
+      <div id="runtimeGrid" class="runtime-grid"></div>
+    </section>
+
+    <section class="panel">
+      <h3>Formatted JSON Payload</h3>
+      <pre id="jsonBody">Loading...</pre>
+    </section>
+  </div>
+
+  <script>
+    const statsPath = "${statsPath}";
+    const ids = {
+      generatedAt: document.getElementById("generatedAt"),
+      uptime: document.getElementById("uptime"),
+      timelineCount: document.getElementById("timelineCount"),
+      recentCount: document.getElementById("recentCount"),
+      runtimeGrid: document.getElementById("runtimeGrid"),
+      jsonBody: document.getElementById("jsonBody"),
+    };
+
+    load();
+    setInterval(() => { void load(); }, 3000);
+
+    async function load() {
+      try {
+        const response = await fetch(statsPath, { cache: "no-store" });
+        if (!response.ok) throw new Error("Failed to fetch snapshot JSON");
+        const snapshot = await response.json();
+        render(snapshot);
+      } catch (error) {
+        ids.jsonBody.textContent = String(error && error.message ? error.message : "Unknown snapshot error");
+      }
+    }
+
+    function render(snapshot) {
+      ids.generatedAt.textContent = snapshot.generatedAt || "-";
+      ids.uptime.textContent = sec(snapshot.uptimeSec);
+      ids.timelineCount.textContent = n((snapshot.timeline || []).length);
+      ids.recentCount.textContent = n((snapshot.recent || []).length);
+
+      const runtime = snapshot.runtime || {};
+      const totals = snapshot.totals || {};
+      const levels = snapshot.levels || {};
+      const rows = [
+        ["authMode", runtime.authMode],
+        ["queueBackend", runtime.queueBackend],
+        ["queueDepth", runtime.queueDepth],
+        ["activeJobs", runtime.activeJobs],
+        ["apiPort", runtime.port],
+        ["monitorPort", runtime.monitorPort],
+        ["sendRequestsTotal", totals.sendRequestsTotal],
+        ["mailQueuedTotal", totals.mailQueuedTotal],
+        ["mailSentTotal", totals.mailSentTotal],
+        ["mailFailedTotal", totals.mailFailedTotal],
+        ["internalErrorTotal", totals.internalErrorTotal],
+        ["INFO", levels.INFO],
+        ["WARN", levels.WARN],
+        ["ERROR", levels.ERROR],
+        ["DEBUG", levels.DEBUG],
+      ];
+
+      ids.runtimeGrid.innerHTML = rows
+        .map(
+          (row) =>
+            "<div class='runtime-item'><span class='label'>" +
+            esc(row[0]) +
+            "</span><span class='value'>" +
+            esc(nv(row[1])) +
+            "</span></div>",
+        )
+        .join("");
+
+      ids.jsonBody.innerHTML = highlightJson(snapshot);
+    }
+
+    function highlightJson(value) {
+      const json = safeJson(value, true);
+      const tokenRx =
+        /("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*"\\s*:?)|("(?:\\\\u[a-zA-Z0-9]{4}|\\\\[^u]|[^\\\\"])*")|\\btrue\\b|\\bfalse\\b|\\bnull\\b|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?/g;
+      let output = "";
+      let cursor = 0;
+      let match = tokenRx.exec(json);
+
+      while (match) {
+        const token = match[0];
+        const index = match.index;
+        output += esc(json.slice(cursor, index));
+        if (token.endsWith(":")) output += "<span class='json-key'>" + esc(token) + "</span>";
+        else if (token.startsWith('"')) output += "<span class='json-string'>" + esc(token) + "</span>";
+        else if (token === "true" || token === "false") output += "<span class='json-boolean'>" + esc(token) + "</span>";
+        else if (token === "null") output += "<span class='json-null'>" + esc(token) + "</span>";
+        else output += "<span class='json-number'>" + esc(token) + "</span>";
+        cursor = index + token.length;
+        match = tokenRx.exec(json);
+      }
+
+      output += esc(json.slice(cursor));
+      return output;
+    }
+
+    function safeJson(value, pretty) {
+      try {
+        return JSON.stringify(value, null, pretty ? 2 : 0);
+      } catch (error) {
+        return String(value);
+      }
+    }
+
+    function sec(value) {
+      if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+      const s = Math.floor(Number(value));
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const ss = s % 60;
+      return h + "h " + m + "m " + ss + "s";
+    }
+
+    function nv(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      if (Number.isFinite(Number(value))) return Number(value).toLocaleString("en-US");
+      return String(value);
+    }
+
+    function n(value) {
+      if (!Number.isFinite(Number(value))) return "0";
+      return Number(value).toLocaleString("en-US");
     }
 
     function esc(value) {
@@ -757,5 +1866,6 @@ function round3(value) {
 module.exports = {
   createMonitor,
   renderMonitorPageHtml,
+  renderMonitorMetricsPageHtml,
+  renderMonitorRawPageHtml,
 };
-

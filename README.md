@@ -76,6 +76,7 @@ Important variables:
   - `MAX_ATTACHMENT_TOTAL_BYTES` (default `8388608`)
 - Live monitor:
   - `MONITOR_ENABLED`, `MONITOR_PATH`, `METRICS_PATH`
+  - `MONITOR_HOST`, `MONITOR_PORT`
   - `MONITOR_SSE_INTERVAL_MS`, `MONITOR_TOKEN`
   - `MONITOR_MAX_RECENT_ENTRIES`, `MONITOR_MAX_TIMELINE_MINUTES`
 
@@ -91,6 +92,20 @@ Default URL: `http://localhost:3000`
 Live monitor URL (default): `http://localhost:3000/monitor`
 
 Prometheus metrics URL (default): `http://localhost:3000/metrics`
+
+Formatted monitor pages:
+
+- Metrics view: `http://localhost:3000/monitor/metrics-view`
+- Raw snapshot view: `http://localhost:3000/monitor/raw-view`
+
+To run monitor on a dedicated port, set for example:
+
+```bash
+PORT=3000
+MONITOR_PORT=3300
+```
+
+Then monitor/metrics endpoints are served from `http://localhost:3300`.
 
 ## Linux Auto Install (systemd service)
 
