@@ -17,6 +17,7 @@ SERVICE_USER="$SERVICE_USER_DEFAULT"
 SERVICE_GROUP=""
 ENV_TEMPLATE_FILE=".env.example"
 ENV_FILE=".env"
+SHOULD_CONFIGURE_ENV="false"
 
 RED="\033[1;31m"
 GREEN="\033[1;32m"
@@ -318,6 +319,53 @@ prompt_env_value() {
   fi
 }
 
+ask_env_configuration_preference() {
+  local choice=""
+
+  if [[ ! -t 0 ]]; then
+    SHOULD_CONFIGURE_ENV="false"
+    warn "Non-interactive shell detected. Skipping interactive .env editing."
+    return
+  fi
+
+  read -r -p ".env dosyasini simdi duzenlemek ister misiniz? [y/N]: " choice
+  case "${choice}" in
+    y|Y|yes|YES|Yes)
+      SHOULD_CONFIGURE_ENV="true"
+      ;;
+    *)
+      SHOULD_CONFIGURE_ENV="false"
+      ;;
+  esac
+}
+
+ensure_env_file_without_prompt() {
+  local template_path="${APP_DIR}/${ENV_TEMPLATE_FILE}"
+  local env_path="${APP_DIR}/${ENV_FILE}"
+
+  if [[ -f "${env_path}" ]]; then
+    info ".env already exists, skipping interactive edit as requested."
+    return
+  fi
+
+  if [[ ! -f "${template_path}" ]]; then
+    err "${ENV_TEMPLATE_FILE} is missing in ${APP_DIR}"
+    exit 1
+  fi
+
+  cp "${template_path}" "${env_path}"
+
+  if [[ "$(id -un)" != "${SERVICE_USER}" ]]; then
+    ${SUDO} chown "${SERVICE_USER}:${SERVICE_GROUP}" "${env_path}" || true
+    ${SUDO} chmod 640 "${env_path}" || true
+  else
+    chmod 600 "${env_path}" || true
+  fi
+
+  warn ".env created from ${ENV_TEMPLATE_FILE} with default values."
+  warn "You can edit ${env_path} later if needed."
+}
+
 configure_env_file() {
   local template_path="${APP_DIR}/${ENV_TEMPLATE_FILE}"
   local env_path="${APP_DIR}/${ENV_FILE}"
@@ -464,7 +512,12 @@ main() {
   fi
   SERVICE_GROUP="$(id -gn "${SERVICE_USER}")"
 
-  configure_env_file
+  ask_env_configuration_preference
+  if [[ "${SHOULD_CONFIGURE_ENV}" == "true" ]]; then
+    configure_env_file
+  else
+    ensure_env_file_without_prompt
+  fi
 
   if [[ "${SKIP_SYSTEM_DEPS}" != "true" ]]; then
     install_system_dependencies
