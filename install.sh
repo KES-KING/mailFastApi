@@ -291,6 +291,9 @@ prompt_env_value() {
   local key="$1"
   local default_value="$2"
   local input_value=""
+  local prompt_label=""
+
+  prompt_label="$(env_prompt_label "${key}")"
 
   if [[ ! -t 0 ]]; then
     echo "${default_value}"
@@ -299,16 +302,16 @@ prompt_env_value() {
 
   if is_secret_key "${key}"; then
     if [[ -n "${default_value}" ]]; then
-      read -r -s -p "${key} [default: hidden, Enter keeps default]: " input_value
+      read -r -s -p "${prompt_label} [varsayilan: gizli, Enter mevcutu korur]: " input_value
     else
-      read -r -s -p "${key} [default: empty]: " input_value
+      read -r -s -p "${prompt_label} [varsayilan: bos]: " input_value
     fi
     echo ""
   else
     if [[ -n "${default_value}" ]]; then
-      read -r -p "${key} [default: ${default_value}]: " input_value
+      read -r -p "${prompt_label} [varsayilan: ${default_value}]: " input_value
     else
-      read -r -p "${key} [default: empty]: " input_value
+      read -r -p "${prompt_label} [varsayilan: bos]: " input_value
     fi
   fi
 
@@ -317,6 +320,51 @@ prompt_env_value() {
   else
     echo "${input_value}"
   fi
+}
+
+env_prompt_label() {
+  local key="$1"
+  case "${key}" in
+    SMTP_HOST) echo "SMTP mail server adresi (or. smtp.gmail.com)" ;;
+    SMTP_PORT) echo "SMTP portu (genelde 587 veya 465)" ;;
+    SMTP_USER) echo "SMTP kullanici adi / e-posta adresi" ;;
+    SMTP_PASS) echo "SMTP sifresi / uygulama sifresi" ;;
+    SMTP_SECURE) echo "SMTP secure degeri (true/false)" ;;
+    SMTP_MAX_CONNECTIONS) echo "SMTP havuz max baglanti sayisi" ;;
+    SMTP_MAX_MESSAGES) echo "Baglanti basi max mesaj sayisi" ;;
+    SMTP_RATE_LIMIT) echo "SMTP rate limit (pencere icindeki max mesaj)" ;;
+    SMTP_RATE_DELTA) echo "SMTP rate delta (ms)" ;;
+    PORT) echo "API portu" ;;
+    MAIL_FROM) echo "Gonderici adresi (MAIL_FROM)" ;;
+    AUTH_MODE) echo "Kimlik dogrulama modu (jwt/api_key/none)" ;;
+    JWT_SECRET) echo "JWT secret anahtari" ;;
+    JWT_ISSUER) echo "JWT issuer" ;;
+    JWT_AUDIENCE) echo "JWT audience" ;;
+    JWT_EXPIRES_IN) echo "JWT suresi (or. 5m, 1h)" ;;
+    AUTH_CLIENT_ID) echo "JWT istemci kimligi (client id)" ;;
+    AUTH_CLIENT_SECRET) echo "JWT istemci gizli anahtari (client secret)" ;;
+    JWT_CLIENTS_JSON) echo "Coklu JWT istemci JSON (opsiyonel)" ;;
+    TOKEN_RATE_LIMIT_WINDOW_MS) echo "Token endpoint rate limit penceresi (ms)" ;;
+    TOKEN_RATE_LIMIT_MAX) echo "Token endpoint max istek sayisi" ;;
+    API_KEY) echo "API key degeri (AUTH_MODE=api_key icin)" ;;
+    RATE_LIMIT_WINDOW_MS) echo "Global API rate limit penceresi (ms)" ;;
+    RATE_LIMIT_MAX) echo "Global API max istek sayisi" ;;
+    QUEUE_BACKEND) echo "Kuyruk backend'i (redis/memory)" ;;
+    QUEUE_MAX_SIZE) echo "In-memory kuyruk max boyutu" ;;
+    WORKER_CONCURRENCY) echo "Paralel worker sayisi" ;;
+    RETRY_ATTEMPTS) echo "Mail gonderim retry deneme sayisi" ;;
+    RETRY_DELAY_MS) echo "Retry gecikmesi (ms)" ;;
+    SHUTDOWN_TIMEOUT_MS) echo "Graceful shutdown timeout (ms)" ;;
+    REDIS_URL) echo "Redis baglanti adresi (URL)" ;;
+    REDIS_QUEUE_KEY) echo "Redis kuyruk anahtari (key)" ;;
+    REDIS_COMMAND_TIMEOUT_MS) echo "Redis komut timeout (ms)" ;;
+    LOG_DB_PATH) echo "SQLite log veritabani yolu" ;;
+    LOG_DIR) echo "Log klasoru" ;;
+    LOG_FILE_NAME) echo "Log dosya adi" ;;
+    LOG_FLUSH_INTERVAL_MS) echo "Log flush araligi (ms)" ;;
+    TEST_MAIL_TO) echo "Test mail alicisi (npm test mailsend icin)" ;;
+    *) echo "${key}" ;;
+  esac
 }
 
 ask_env_configuration_preference() {
