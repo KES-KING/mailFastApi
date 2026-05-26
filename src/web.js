@@ -17,22 +17,24 @@ const {
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const CORE_PORT = toInt(process.env.PORT, 3000);
-const WEB_PORT = toInt(process.env.WEB_PORT, 3300);
+const WEB_PORT = 8080;
 const WEB_HOST = String(process.env.WEB_HOST || "").trim();
 const WEB_SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.WEB_SHUTDOWN_TIMEOUT_MS, 12000));
 
-const MONITOR_PATH = normalizePath(process.env.MONITOR_PATH || "/monitor");
-const MONITOR_STATS_PATH = MONITOR_PATH === "/" ? "/stats" : `${MONITOR_PATH}/stats`;
-const MONITOR_STREAM_PATH = MONITOR_PATH === "/" ? "/stream" : `${MONITOR_PATH}/stream`;
-const MONITOR_METRICS_VIEW_PATH =
-  MONITOR_PATH === "/" ? "/metrics-view" : `${MONITOR_PATH}/metrics-view`;
-const MONITOR_RAW_VIEW_PATH = MONITOR_PATH === "/" ? "/raw-view" : `${MONITOR_PATH}/raw-view`;
-const MONITOR_LOGO_ASSET_PATH =
-  MONITOR_PATH === "/" ? "/assets/logo.webp" : `${MONITOR_PATH}/assets/logo.webp`;
-const MONITOR_UPDATE_CHECK_PATH =
-  MONITOR_PATH === "/" ? "/update/check" : `${MONITOR_PATH}/update/check`;
-const MONITOR_UPDATE_APPLY_PATH =
-  MONITOR_PATH === "/" ? "/update/apply" : `${MONITOR_PATH}/update/apply`;
+const CORE_MONITOR_PATH = normalizePath(process.env.MONITOR_PATH || "/monitor");
+const CORE_MONITOR_STATS_PATH =
+  CORE_MONITOR_PATH === "/" ? "/stats" : `${CORE_MONITOR_PATH}/stats`;
+const CORE_MONITOR_STREAM_PATH =
+  CORE_MONITOR_PATH === "/" ? "/stream" : `${CORE_MONITOR_PATH}/stream`;
+
+const MONITOR_PATH = "/";
+const MONITOR_STATS_PATH = "/stats";
+const MONITOR_STREAM_PATH = "/stream";
+const MONITOR_METRICS_VIEW_PATH = "/metrics-view";
+const MONITOR_RAW_VIEW_PATH = "/raw-view";
+const MONITOR_LOGO_ASSET_PATH = "/assets/logo.webp";
+const MONITOR_UPDATE_CHECK_PATH = "/update/check";
+const MONITOR_UPDATE_APPLY_PATH = "/update/apply";
 
 const METRICS_PATH = normalizePath(process.env.METRICS_PATH || "/metrics");
 const MONITOR_TOKEN = String(process.env.MONITOR_TOKEN || "").trim();
@@ -79,6 +81,15 @@ app.get(MONITOR_LOGO_ASSET_PATH, monitorAuth, (req, res, next) => {
   });
 });
 
+app.get("/favicon.ico", (req, res) => {
+  res.status(204).end();
+});
+
+app.get("/monitor", monitorAuth, (req, res) => {
+  const tokenSuffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+  res.redirect(302, `/${tokenSuffix}`);
+});
+
 app.get(MONITOR_PATH, monitorAuth, (req, res) => {
   const tokenSuffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
   const html = renderMonitorPageHtml({
@@ -121,7 +132,7 @@ app.get(MONITOR_RAW_VIEW_PATH, monitorAuth, (req, res) => {
 
 app.get(MONITOR_STATS_PATH, monitorAuth, async (req, res, next) => {
   try {
-    const response = await fetch(buildCoreUrl(req, MONITOR_STATS_PATH), {
+    const response = await fetch(buildCoreUrl(req, CORE_MONITOR_STATS_PATH), {
       headers: buildCoreHeaders(req),
       cache: "no-store",
     });
@@ -150,7 +161,7 @@ app.get(MONITOR_STREAM_PATH, monitorAuth, async (req, res, next) => {
   });
 
   try {
-    const response = await fetch(buildCoreUrl(req, MONITOR_STREAM_PATH), {
+    const response = await fetch(buildCoreUrl(req, CORE_MONITOR_STREAM_PATH), {
       headers: {
         ...buildCoreHeaders(req),
         Accept: "text/event-stream",

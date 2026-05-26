@@ -14,6 +14,7 @@ const {
   getDefaultSmtpAccountName,
   getDefaultFromForAccount,
   getSmtpAccountNames,
+  getSmtpAccountSummaries,
   resolveSmtpAccountName,
 } = require("./mailer");
 const { createWorker } = require("./worker");
@@ -91,6 +92,7 @@ const MONITOR_LOGO_FILE_PATH = path.resolve(__dirname, "..", "MailFastApi_Logo.w
 const authConfig = loadAuthConfig(process.env);
 const DEFAULT_SMTP_ACCOUNT = getDefaultSmtpAccountName();
 const SMTP_ACCOUNT_NAMES = getSmtpAccountNames();
+const SMTP_ACCOUNT_SUMMARIES = getSmtpAccountSummaries();
 const MAIL_FROM = getDefaultFromForAccount(DEFAULT_SMTP_ACCOUNT);
 const monitor = createMonitor({
   maxRecentEntries: MONITOR_MAX_RECENT_ENTRIES,
@@ -201,6 +203,8 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   const traceId = req.header("x-request-id") || crypto.randomUUID();
   const jobId = crypto.randomUUID();
   const now = Date.now();
+  const resolvedFrom =
+    normalizedPayload.from || getDefaultFromForAccount(normalizedPayload.smtpAccount);
 
   logger.info(
     "request received",
@@ -210,6 +214,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       traceId,
       jobId,
       to: normalizedPayload.to,
+      from: resolvedFrom,
       smtpAccount: normalizedPayload.smtpAccount,
       authSub: req.auth ? req.auth.sub : undefined,
     },
@@ -253,6 +258,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       traceId,
       jobId,
       smtpAccount: normalizedPayload.smtpAccount,
+      from: resolvedFrom,
       queueDepth,
       queueBackend: queue.backend,
     },
@@ -320,6 +326,7 @@ async function bootstrap() {
     queueMaxSize: QUEUE_MAX_SIZE,
     redisQueueKey: queue.backend === "redis" ? REDIS_QUEUE_KEY : undefined,
     smtpAccounts: SMTP_ACCOUNT_NAMES,
+    smtpAccountDetails: SMTP_ACCOUNT_SUMMARIES,
     defaultSmtpAccount: DEFAULT_SMTP_ACCOUNT,
     logFilePath: logger.getLogFilePath(),
     logDbPath: store.getDbPath(),
@@ -512,6 +519,9 @@ async function collectRuntimeMetrics() {
     activeJobs: worker.getActiveJobs(),
     authMode: authConfig.mode,
     queueBackend: queue.backend,
+    smtpAccounts: SMTP_ACCOUNT_NAMES,
+    smtpAccountDetails: SMTP_ACCOUNT_SUMMARIES,
+    defaultSmtpAccount: DEFAULT_SMTP_ACCOUNT,
     port: PORT,
     monitorPort: MONITOR_PORT,
   };

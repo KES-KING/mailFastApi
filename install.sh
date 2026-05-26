@@ -327,7 +327,7 @@ ensure_env_file() {
   set_env_default "MONITOR_UI_ENABLED" "false"
   set_env_default "MONITOR_PATH" "/monitor"
   set_env_default "METRICS_PATH" "/metrics"
-  set_env_default "WEB_PORT" "3300"
+  set_env_default "WEB_PORT" "8080"
   set_env_default "WEB_HOST" "0.0.0.0"
   set_env_default "WEB_CORE_BASE_URL" "http://127.0.0.1:${port}"
   set_env_default "WEB_ENABLE_UPDATER" "true"
@@ -526,7 +526,7 @@ setup_systemd_services() {
 print_post_install() {
   local port web_port
   port="$(get_env_value "PORT" "3000")"
-  web_port="$(get_env_value "WEB_PORT" "3300")"
+  web_port="8080"
 
   echo ""
   ok "Installation completed."
@@ -537,7 +537,7 @@ print_post_install() {
   echo ""
   echo "URLs (default):"
   echo "  Core Health : http://127.0.0.1:${port}/health"
-  echo "  Web Monitor : http://127.0.0.1:${web_port}/monitor"
+  echo "  Web Monitor : http://127.0.0.1:${web_port}"
   echo ""
   echo "Useful commands:"
   echo "  sudo systemctl status ${CORE_SERVICE_NAME}"
@@ -577,7 +577,7 @@ main() {
 
   local core_port web_port
   core_port="$(get_env_value "PORT" "3000")"
-  web_port="$(get_env_value "WEB_PORT" "3300")"
+  web_port="8080"
   check_port "$core_port" "Core"
   check_port "$web_port" "Web"
 

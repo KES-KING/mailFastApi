@@ -14,7 +14,7 @@ Core design:
 ```text
 Client -> Core API (/send, /auth/token, /health) -> Queue -> Worker -> SMTP Provider
                                      \-> Structured Logger -> SQLite + File + Console
-Web Panel Service -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
+Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
                  -> Update Control (updater.sh)
 ```
 
@@ -32,6 +32,7 @@ Web Panel Service -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metric
 - CLI log dashboard:
   - `npm run log mailsender`
   - `npm run log:mailsender`
+- Legacy web monitor at `http://localhost:8080` with SMTP account filtering
 
 ## Project Structure
 
@@ -86,7 +87,8 @@ Important variables:
   - `MONITOR_SSE_INTERVAL_MS`, `MONITOR_TOKEN`
   - `MONITOR_MAX_RECENT_ENTRIES`, `MONITOR_MAX_TIMELINE_MINUTES`
 - Web service:
-  - `WEB_PORT`, `WEB_HOST`, `WEB_CORE_BASE_URL`
+  - fixed legacy panel port: `8080`
+  - `WEB_HOST`, `WEB_CORE_BASE_URL`
   - `WEB_ENABLE_UPDATER`, `WEB_UPDATE_SCRIPT`, `WEB_UPDATE_TIMEOUT_MS`
   - `WEB_UPDATE_TOKEN` (optional extra protection for update endpoints)
 
@@ -100,14 +102,14 @@ npm run start:web
 
 Core URL (default): `http://localhost:3000`
 
-Web monitor URL (default): `http://localhost:3300/monitor`
+Web monitor URL (default): `http://localhost:8080`
 
-Prometheus metrics URL (default): `http://localhost:3300/metrics`
+Prometheus metrics URL (default): `http://localhost:8080/metrics`
 
 Formatted monitor pages:
 
-- Metrics view: `http://localhost:3000/monitor/metrics-view`
-- Raw snapshot view: `http://localhost:3000/monitor/raw-view`
+- Metrics view: `http://localhost:8080/metrics-view`
+- Raw snapshot view: `http://localhost:8080/raw-view`
 
 ## Linux Auto Install (dual systemd services)
 

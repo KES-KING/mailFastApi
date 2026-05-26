@@ -26,6 +26,7 @@ function createMonitor(options = {}) {
 
   const recentEntries = [];
   const timelineByMinute = new Map();
+  const accountsByName = new Map();
 
   function ingestLogEntry(entry) {
     const normalized = normalizeEntry(entry);
@@ -38,6 +39,7 @@ function createMonitor(options = {}) {
 
     updateTotalsByEvent(normalized);
     updateTimeline(normalized);
+    updateAccountStats(normalized);
 
     recentEntries.push(normalized);
     if (recentEntries.length > maxRecentEntries) {
@@ -54,10 +56,16 @@ function createMonitor(options = {}) {
         activeJobs: numberOrNull(runtime.activeJobs),
         authMode: runtime.authMode || null,
         queueBackend: runtime.queueBackend || null,
+        smtpAccounts: Array.isArray(runtime.smtpAccounts) ? runtime.smtpAccounts.slice() : [],
+        smtpAccountDetails: Array.isArray(runtime.smtpAccountDetails)
+          ? runtime.smtpAccountDetails.map((account) => ({ ...account }))
+          : [],
+        defaultSmtpAccount: runtime.defaultSmtpAccount || null,
         port: numberOrNull(runtime.port),
         monitorPort: numberOrNull(runtime.monitorPort),
       },
       totals: { ...totals },
+      accounts: getAccountRows(runtime),
       levels: { ...levels },
       timeline: getTimelineRows(),
       recent: recentEntries.slice(-120),
@@ -211,6 +219,138 @@ function createMonitor(options = {}) {
 
     timelineByMinute.set(minuteMs, bucket);
     pruneTimeline(minuteMs);
+  }
+
+  function updateAccountStats(entry) {
+    const details = entry.details || {};
+    const isSendRequest =
+      entry.event === "request received" && details && details.path === "/send";
+    const isMailEvent = [
+      "mail queued",
+      "mail sent",
+      "mail failed",
+      "mail send failed, retrying",
+    ].includes(entry.event);
+
+    if (!isSendRequest && !isMailEvent) {
+      return;
+    }
+
+    const accountName = resolveEntryAccountName(entry);
+    const row = getOrCreateAccountStats(accountName);
+    row.lastSeen = entry.timestamp;
+    row.lastEvent = entry.event;
+
+    const sender = extractEmailAddress(details.from);
+    if (sender) {
+      row.fromAddresses.add(sender);
+    }
+
+    for (const recipient of normalizeRecipients(details.to)) {
+      row.recipients.add(recipient);
+    }
+
+    if (isSendRequest) {
+      row.sendRequests += 1;
+      return;
+    }
+    if (entry.event === "mail queued") {
+      row.queued += 1;
+      return;
+    }
+    if (entry.event === "mail sent") {
+      row.sent += 1;
+      if (details.messageId) {
+        row.lastMessageId = String(details.messageId);
+      }
+      return;
+    }
+    if (entry.event === "mail failed") {
+      row.failed += 1;
+      if (details.message) {
+        row.lastError = String(details.message);
+      }
+      return;
+    }
+    if (entry.event === "mail send failed, retrying") {
+      row.retry += 1;
+      if (details.message) {
+        row.lastError = String(details.message);
+      }
+    }
+  }
+
+  function getOrCreateAccountStats(name) {
+    const accountName = normalizeAccountName(name);
+    let row = accountsByName.get(accountName);
+    if (!row) {
+      row = {
+        name: accountName,
+        sendRequests: 0,
+        queued: 0,
+        sent: 0,
+        failed: 0,
+        retry: 0,
+        fromAddresses: new Set(),
+        recipients: new Set(),
+        lastSeen: null,
+        lastEvent: null,
+        lastError: null,
+        lastMessageId: null,
+      };
+      accountsByName.set(accountName, row);
+    }
+    return row;
+  }
+
+  function getAccountRows(runtime = {}) {
+    const configured = Array.isArray(runtime.smtpAccounts) ? runtime.smtpAccounts : [];
+    for (const name of configured) {
+      getOrCreateAccountStats(name);
+    }
+    const configuredDetails = Array.isArray(runtime.smtpAccountDetails)
+      ? runtime.smtpAccountDetails
+      : [];
+    for (const account of configuredDetails) {
+      if (!account || !account.name) {
+        continue;
+      }
+      const row = getOrCreateAccountStats(account.name);
+      const sender = extractEmailAddress(account.from);
+      if (sender) {
+        row.fromAddresses.add(sender);
+      }
+      if (Array.isArray(account.identityEmails)) {
+        for (const email of account.identityEmails) {
+          const normalized = extractEmailAddress(email) || String(email || "").trim().toLowerCase();
+          if (normalized) {
+            row.fromAddresses.add(normalized);
+          }
+        }
+      }
+    }
+
+    return [...accountsByName.values()]
+      .map((row) => ({
+        name: row.name,
+        isDefault: row.name === runtime.defaultSmtpAccount,
+        sendRequests: row.sendRequests,
+        queued: row.queued,
+        sent: row.sent,
+        failed: row.failed,
+        retry: row.retry,
+        successRate: rate(row.sent, row.sent + row.failed),
+        fromAddresses: [...row.fromAddresses].sort(),
+        recipients: [...row.recipients].sort().slice(0, 10),
+        lastSeen: row.lastSeen,
+        lastEvent: row.lastEvent,
+        lastError: row.lastError,
+        lastMessageId: row.lastMessageId,
+      }))
+      .sort((a, b) => {
+        if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
   }
 
   function createTimelineBucket(minuteMs) {
@@ -539,6 +679,34 @@ function renderMonitorPageHtml(options = {}) {
       flex-wrap: wrap;
       margin-bottom: 8px;
     }
+    .account-panel {
+      margin-bottom: 12px;
+    }
+    .account-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .account-toolbar select,
+    .account-toolbar button {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid #888;
+      border-radius: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      min-height: 34px;
+    }
+    .account-toolbar button {
+      cursor: pointer;
+      font-weight: 700;
+      background: #f4f5f7;
+    }
+    .account-toolbar button:hover {
+      background: #eceff3;
+    }
     .event-toolbar input,
     .event-toolbar select {
       background: #fff;
@@ -559,6 +727,9 @@ function renderMonitorPageHtml(options = {}) {
       border-radius: 4px;
       border: 1px solid var(--line);
       background: #fff;
+    }
+    .account-table-wrap {
+      max-height: 320px;
     }
     table {
       width: 100%;
@@ -738,11 +909,44 @@ function renderMonitorPageHtml(options = {}) {
       </section>
     </section>
 
+    <article class="panel account-panel">
+      <h3>SMTP Accounts</h3>
+      <p>Filter traffic by configured SMTP account and inspect each sender separately.</p>
+      <div class="account-toolbar">
+        <select id="accountFilter">
+          <option value="ALL">All Accounts</option>
+        </select>
+        <button id="clearAccountFilter" type="button">Show All</button>
+      </div>
+      <div class="table-wrap account-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:160px;">Account</th>
+              <th style="width:120px;">Requests</th>
+              <th style="width:100px;">Queued</th>
+              <th style="width:100px;">Sent</th>
+              <th style="width:100px;">Failed</th>
+              <th style="width:100px;">Retry</th>
+              <th style="width:120px;">Success</th>
+              <th>Senders</th>
+              <th style="width:190px;">Last Seen</th>
+              <th style="width:90px;">Manage</th>
+            </tr>
+          </thead>
+          <tbody id="accountsBody"></tbody>
+        </table>
+      </div>
+    </article>
+
     <article class="panel events-panel">
       <h3>Events</h3>
       <p>Detailed event stream with filters, trace ids, and JSON details.</p>
       <div class="event-toolbar">
         <input id="searchInput" type="text" placeholder="Filter event, source, trace, or JSON detail..." />
+        <select id="eventAccountFilter">
+          <option value="ALL">All Accounts</option>
+        </select>
         <select id="levelFilter">
           <option value="ALL">All Levels</option>
           <option value="ERROR">ERROR</option>
@@ -758,6 +962,7 @@ function renderMonitorPageHtml(options = {}) {
               <th style="width:180px;">Time</th>
               <th style="width:80px;">Level</th>
               <th style="width:190px;">Event</th>
+              <th style="width:130px;">Account</th>
               <th style="width:90px;">Source</th>
               <th style="width:170px;">Trace</th>
               <th>Details</th>
@@ -777,6 +982,7 @@ function renderMonitorPageHtml(options = {}) {
     const state = {
       snapshot: null,
       levelFilter: "ALL",
+      accountFilter: "ALL",
       textFilter: "",
       updateBusy: false,
     };
@@ -803,6 +1009,10 @@ function renderMonitorPageHtml(options = {}) {
       levelWarn: document.getElementById("levelWarn"),
       levelError: document.getElementById("levelError"),
       levelDebug: document.getElementById("levelDebug"),
+      accountFilter: document.getElementById("accountFilter"),
+      eventAccountFilter: document.getElementById("eventAccountFilter"),
+      clearAccountFilter: document.getElementById("clearAccountFilter"),
+      accountsBody: document.getElementById("accountsBody"),
       eventsBody: document.getElementById("eventsBody"),
       updated: document.getElementById("updated"),
       connDot: document.getElementById("conn-dot"),
@@ -824,6 +1034,18 @@ function renderMonitorPageHtml(options = {}) {
     ids.levelFilter.addEventListener("change", () => {
       state.levelFilter = ids.levelFilter.value || "ALL";
       renderEvents((state.snapshot && state.snapshot.recent) || []);
+    });
+
+    ids.accountFilter.addEventListener("change", () => {
+      setAccountFilter(ids.accountFilter.value || "ALL");
+    });
+
+    ids.eventAccountFilter.addEventListener("change", () => {
+      setAccountFilter(ids.eventAccountFilter.value || "ALL");
+    });
+
+    ids.clearAccountFilter.addEventListener("click", () => {
+      setAccountFilter("ALL");
     });
 
     ids.checkUpdateBtn.addEventListener("click", () => {
@@ -1014,19 +1236,128 @@ function renderMonitorPageHtml(options = {}) {
       ids.levelDebug.textContent = n(lvl.DEBUG);
       ids.updated.textContent = "Updated: " + (snapshot.generatedAt || "-");
 
+      renderAccountOptions(snapshot.accounts || []);
+      renderAccounts(snapshot.accounts || []);
       renderEvents(snapshot.recent || []);
       renderTimeline(snapshot.timeline || []);
+    }
+
+    function setAccountFilter(value) {
+      state.accountFilter = value || "ALL";
+      ids.accountFilter.value = state.accountFilter;
+      ids.eventAccountFilter.value = state.accountFilter;
+      renderAccounts((state.snapshot && state.snapshot.accounts) || []);
+      renderEvents((state.snapshot && state.snapshot.recent) || []);
+    }
+
+    function renderAccountOptions(accounts) {
+      const names = ["ALL"];
+      for (const account of accounts || []) {
+        if (account && account.name && !names.includes(account.name)) {
+          names.push(account.name);
+        }
+      }
+
+      const options = names
+        .map((name) => {
+          const label = name === "ALL" ? "All Accounts" : name;
+          return (
+            "<option value='" +
+            esc(name) +
+            "'>" +
+            esc(label) +
+            "</option>"
+          );
+        })
+        .join("");
+
+      ids.accountFilter.innerHTML = options;
+      ids.eventAccountFilter.innerHTML = options;
+      if (!names.includes(state.accountFilter)) {
+        state.accountFilter = "ALL";
+      }
+      ids.accountFilter.value = state.accountFilter;
+      ids.eventAccountFilter.value = state.accountFilter;
+    }
+
+    function renderAccounts(accounts) {
+      const rows = (accounts || []).filter((account) => {
+        return state.accountFilter === "ALL" || account.name === state.accountFilter;
+      });
+
+      if (rows.length === 0) {
+        ids.accountsBody.innerHTML =
+          "<tr><td colspan='10' class='empty'>No SMTP account data for current filter.</td></tr>";
+        return;
+      }
+
+      ids.accountsBody.innerHTML = rows
+        .map((account) => {
+          const senders =
+            account.fromAddresses && account.fromAddresses.length > 0
+              ? account.fromAddresses.join(", ")
+              : "-";
+          const label = account.isDefault ? account.name + " (default)" : account.name;
+          const success =
+            account.successRate === null || account.successRate === undefined
+              ? "-"
+              : String(account.successRate) + "%";
+
+          return (
+            "<tr>" +
+            "<td>" +
+            esc(label) +
+            "</td>" +
+            "<td>" +
+            n(account.sendRequests) +
+            "</td>" +
+            "<td>" +
+            n(account.queued) +
+            "</td>" +
+            "<td>" +
+            n(account.sent) +
+            "</td>" +
+            "<td>" +
+            n(account.failed) +
+            "</td>" +
+            "<td>" +
+            n(account.retry) +
+            "</td>" +
+            "<td>" +
+            esc(success) +
+            "</td>" +
+            "<td>" +
+            esc(senders) +
+            "</td>" +
+            "<td>" +
+            esc(account.lastSeen || "-") +
+            "</td>" +
+            "<td><button type='button' class='action-btn' data-account='" +
+            esc(account.name) +
+            "'>Focus</button></td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+
+      ids.accountsBody.querySelectorAll("button[data-account]").forEach((button) => {
+        button.addEventListener("click", () => {
+          setAccountFilter(button.getAttribute("data-account") || "ALL");
+        });
+      });
     }
 
     function renderEvents(entries) {
       const source = entries.slice().reverse();
       const filtered = source
-        .filter((entry) => matchEntry(entry, state.levelFilter, state.textFilter))
+        .filter((entry) =>
+          matchEntry(entry, state.levelFilter, state.textFilter, state.accountFilter),
+        )
         .slice(0, 120);
 
       if (filtered.length === 0) {
         ids.eventsBody.innerHTML =
-          "<tr><td colspan='6' class='empty'>No events for current filters.</td></tr>";
+          "<tr><td colspan='7' class='empty'>No events for current filters.</td></tr>";
         return;
       }
 
@@ -1034,6 +1365,7 @@ function renderMonitorPageHtml(options = {}) {
         .map((entry) => {
           const level = String(entry.level || "INFO").toUpperCase();
           const details = entry.details && typeof entry.details === "object" ? entry.details : {};
+          const account = getEntryAccount(entry);
           const trace = entry.traceId || details.traceId || "-";
           const chips = summarizeDetails(details)
             .map(
@@ -1056,6 +1388,9 @@ function renderMonitorPageHtml(options = {}) {
             esc(entry.event || "") +
             "</td>" +
             "<td>" +
+            esc(account) +
+            "</td>" +
+            "<td>" +
             esc(entry.source || "") +
             "</td>" +
             "<td class='trace'>" +
@@ -1072,9 +1407,12 @@ function renderMonitorPageHtml(options = {}) {
         .join("");
     }
 
-    function matchEntry(entry, levelFilter, textFilter) {
+    function matchEntry(entry, levelFilter, textFilter, accountFilter) {
       const level = String(entry && entry.level ? entry.level : "INFO").toUpperCase();
       if (levelFilter && levelFilter !== "ALL" && level !== levelFilter) {
+        return false;
+      }
+      if (accountFilter && accountFilter !== "ALL" && getEntryAccount(entry) !== accountFilter) {
         return false;
       }
       if (!textFilter) {
@@ -1084,6 +1422,7 @@ function renderMonitorPageHtml(options = {}) {
         entry && entry.timestamp ? String(entry.timestamp) : "",
         entry && entry.event ? String(entry.event) : "",
         entry && entry.source ? String(entry.source) : "",
+        getEntryAccount(entry),
         entry && entry.traceId ? String(entry.traceId) : "",
         safeJson(entry && entry.details ? entry.details : {}, false),
       ]
@@ -1092,8 +1431,32 @@ function renderMonitorPageHtml(options = {}) {
       return haystack.includes(textFilter);
     }
 
+    function getEntryAccount(entry) {
+      const details = entry && entry.details && typeof entry.details === "object" ? entry.details : {};
+      if (details.smtpAccount) {
+        return String(details.smtpAccount);
+      }
+      const sender = extractEmail(details.from);
+      return sender || "default";
+    }
+
+    function extractEmail(value) {
+      if (typeof value !== "string" || !value.trim()) return "";
+      const text = value.trim();
+      const angle = text.match(/<([^<>]+)>/);
+      const candidate = angle ? angle[1].trim() : text;
+      if (/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(candidate)) {
+        return candidate.toLowerCase();
+      }
+      const match = text.match(/[^\\s<>@]+@[^\\s<>@]+\\.[^\\s<>@]+/);
+      return match ? match[0].toLowerCase() : "";
+    }
+
     function summarizeDetails(details) {
       const items = [];
+      pushDetail(items, "account", details.smtpAccount);
+      pushDetail(items, "from", details.from);
+      pushDetail(items, "to", Array.isArray(details.to) ? details.to.join(", ") : details.to);
       pushDetail(items, "path", details.path);
       pushDetail(items, "method", details.method);
       pushDetail(items, "jobId", details.jobId);
@@ -1797,6 +2160,68 @@ function renderMonitorRawPageHtml(options = {}) {
   </script>
 </body>
 </html>`;
+}
+
+function resolveEntryAccountName(entry) {
+  const details = entry && entry.details && typeof entry.details === "object" ? entry.details : {};
+  if (typeof details.smtpAccount === "string" && details.smtpAccount.trim()) {
+    return details.smtpAccount.trim();
+  }
+
+  const sender = extractEmailAddress(details.from);
+  if (sender) {
+    return sender;
+  }
+
+  return "default";
+}
+
+function normalizeAccountName(value) {
+  const name = String(value || "").trim();
+  return name || "default";
+}
+
+function normalizeRecipients(value) {
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => extractEmailAddress(item) || String(item).trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) =>
+        typeof item === "string" ? extractEmailAddress(item) || item.trim().toLowerCase() : "",
+      )
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function extractEmailAddress(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+
+  const text = value.trim();
+  const angleMatch = text.match(/<([^<>]+)>/);
+  const candidate = angleMatch ? angleMatch[1].trim() : text;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) {
+    return candidate.toLowerCase();
+  }
+
+  const emailMatch = text.match(/[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+/);
+  return emailMatch ? emailMatch[0].toLowerCase() : "";
+}
+
+function rate(value, total) {
+  const denominator = Number(total);
+  if (!Number.isFinite(denominator) || denominator <= 0) {
+    return null;
+  }
+  return round2((Number(value || 0) / denominator) * 100);
 }
 
 function escapeHtml(value) {

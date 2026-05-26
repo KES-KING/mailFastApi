@@ -6,6 +6,7 @@
 - Content-Type: `application/json`
 - Base URL: `http://localhost:3000` (default)
 - Monitor base URL: same as `Base URL` by default. If `MONITOR_PORT` is set to a different value than `PORT`, monitor endpoints are exposed on `http://localhost:<MONITOR_PORT>`.
+- Legacy web panel URL: `http://localhost:8080` (root path, no `/monitor` suffix).
 
 ## Queue & Processing Model
 
@@ -140,6 +141,19 @@ Related endpoints:
 - `GET /monitor/metrics-view` -> formatted Prometheus metrics page
 - `GET /monitor/raw-view` -> formatted raw snapshot JSON page
 - `GET /metrics` -> Prometheus text metrics
+
+## Legacy Web Panel
+
+The separate web panel service listens on fixed port `8080`.
+
+- `GET /` -> live monitor UI
+- `GET /stats` -> proxied core monitor snapshot
+- `GET /stream` -> proxied core monitor SSE stream
+- `GET /metrics-view` -> formatted Prometheus metrics page
+- `GET /raw-view` -> formatted snapshot page
+- `GET /metrics` -> proxied Prometheus text metrics
+
+The live UI includes SMTP account filtering. Use `smtpAccount` in `/send` requests to route mail and to make account-specific views reliable.
 
 ## Redis Queue Notes
 

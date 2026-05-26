@@ -82,6 +82,14 @@ function getSmtpAccountNames() {
   return getSmtpAccounts().accounts.map((account) => account.name);
 }
 
+function getSmtpAccountSummaries() {
+  return getSmtpAccounts().accounts.map((account) => ({
+    name: account.name,
+    from: account.from,
+    identityEmails: account.identityEmails.slice(),
+  }));
+}
+
 function getDefaultSmtpAccountName() {
   return getSmtpAccounts().defaultAccountName;
 }
@@ -312,6 +320,7 @@ module.exports = {
   closeTransporter: closeTransporters,
   closeTransporters,
   getSmtpAccountNames,
+  getSmtpAccountSummaries,
   getDefaultSmtpAccountName,
   getDefaultFromForAccount,
   resolveSmtpAccountName,
