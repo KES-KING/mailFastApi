@@ -428,7 +428,7 @@ create_runtime_dirs() {
     "$APP_DIR/logs/web" \
     "$APP_DIR/logs/install"
 
-  chmod +x "$APP_DIR/install.sh" "$APP_DIR/updater.sh" || true
+  chmod +x "$APP_DIR/installer.sh" "$APP_DIR/install.sh" "$APP_DIR/updater.sh" || true
 
   if [[ "$(id -un)" != "$SERVICE_USER" ]]; then
     ${SUDO} chown -R "$SERVICE_USER:$SERVICE_GROUP" \

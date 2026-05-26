@@ -120,36 +120,66 @@ Formatted monitor pages:
 - Metrics view: `http://localhost:8080/metrics-view`
 - Raw snapshot view: `http://localhost:8080/raw-view`
 
-## Linux Auto Install (dual systemd services)
+## Cross-Platform Installer
 
-Project root includes `install.sh` to install dependencies, set up Redis, install npm packages, and register two background services:
+Project root includes a cross-platform installer entrypoint:
+
+- `installer.sh` detects Linux, macOS, or Windows Git Bash/MSYS/Cygwin and dispatches to the correct platform installer.
+- `install.sh` is the Linux systemd installer.
+- `macosinstaller.sh` is the macOS launchd installer.
+- `install.ps1` and `installer.cmd` are native Windows installers.
+
+Linux registers two systemd services:
 
 - `mailfastapi-core.service`
 - `mailfastapi-web.service`
 
-Installer also:
+macOS registers two LaunchAgents:
+
+- `com.mailfastapi.core`
+- `com.mailfastapi.web`
+
+Windows registers two Scheduled Tasks:
+
+- `mailfastapi-core`
+- `mailfastapi-web`
+
+All installers:
 
 - creates/updates `.env` from `.env.example`
 - generates `SECURE_STORE_KEY` and `MONITOR_TOKEN` if missing/default
 - appends missing core/web settings
 - checks core/web ports
 - creates runtime directories and permissions
-- enables and starts both services
+- installs npm dependencies
+- runs Node syntax checks
+- enables and starts the platform service/task pair unless skipped
+
+Windows note: if Redis is not detected and `.env` is newly created, the Windows installer sets `QUEUE_BACKEND=memory` for first-run compatibility. For production, install a Redis-compatible service and switch it back to `redis`.
 
 Run installer:
 
 ```bash
-chmod +x install.sh
-./install.sh
+chmod +x installer.sh
+./installer.sh
+```
+
+Native Windows:
+
+```powershell
+.\install.ps1
+# or
+.\installer.cmd
 ```
 
 Common options:
 
 ```bash
-./install.sh --service-user mailer
-./install.sh --app-dir /opt/mailFastApi
-./install.sh --skip-system-deps
-./install.sh --skip-service
+./installer.sh --service-user mailer
+./installer.sh --app-dir /opt/mailFastApi
+./installer.sh --skip-system-deps
+./installer.sh --skip-service
+./installer.sh --skip-npm
 ```
 
 Installer output includes a colored ASCII banner and project GitHub link.

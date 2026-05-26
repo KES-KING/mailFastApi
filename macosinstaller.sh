@@ -484,13 +484,13 @@ create_runtime_dirs() {
     "$APP_DIR/logs/web" \
     "$APP_DIR/logs/install"
 
-  chmod +x "$APP_DIR/updater.sh" "$APP_DIR/macosinstaller.sh" || true
+  chmod +x "$APP_DIR/installer.sh" "$APP_DIR/updater.sh" "$APP_DIR/macosinstaller.sh" || true
 
   if [[ "$(id -un)" != "$SERVICE_USER" ]]; then
     run_privileged chown -R "$SERVICE_USER:$SERVICE_GROUP" \
       "$APP_DIR/data" "$APP_DIR/run" "$APP_DIR/logs" >/dev/null 2>&1 || true
     run_privileged chown "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR/updater.sh" >/dev/null 2>&1 || true
-    run_privileged chown "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR/macosinstaller.sh" >/dev/null 2>&1 || true
+    run_privileged chown "$SERVICE_USER:$SERVICE_GROUP" "$APP_DIR/installer.sh" "$APP_DIR/macosinstaller.sh" >/dev/null 2>&1 || true
   fi
 
   ok "Runtime directories ready."

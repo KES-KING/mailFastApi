@@ -207,13 +207,21 @@ CLI dashboard:
 npm run log mailsender
 ```
 
-## Linux Service Deployment
+## Cross-Platform Deployment
 
-For production-like deployment on Linux, use root-level installer:
+For deployment, use the cross-platform installer entrypoint:
 
 ```bash
-chmod +x install.sh
-./install.sh
+chmod +x installer.sh
+./installer.sh
+```
+
+Native Windows:
+
+```powershell
+.\install.ps1
+# or
+.\installer.cmd
 ```
 
 Installer behavior for environment config:
@@ -225,17 +233,25 @@ Installer behavior for environment config:
 
 Installer capabilities:
 
-- installs OS dependencies (curl, build toolchain, sqlite, redis)
+- dispatches to Linux systemd, macOS launchd, or Windows Scheduled Tasks
+- installs platform dependencies where supported
 - installs Node.js 22 LTS if needed
-- ensures Redis service is enabled and running
+- enables Redis where supported; Windows falls back to `QUEUE_BACKEND=memory` on first-run when Redis is not detected
 - installs npm dependencies in project directory
-- creates and enables systemd units (`mailfastapi-core.service`, `mailfastapi-web.service`)
+- creates and starts platform services/tasks unless skipped
 
 Post-install useful commands:
 
 ```bash
+# Linux
 sudo systemctl status mailfastapi-core mailfastapi-web
 sudo journalctl -u mailfastapi-core -u mailfastapi-web -f
+
+# macOS
+launchctl list | grep mailfastapi
+
+# Windows PowerShell
+Get-ScheduledTask -TaskName 'mailfastapi-*'
 ```
 
 ## cURL Examples
