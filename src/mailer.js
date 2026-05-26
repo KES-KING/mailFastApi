@@ -1,26 +1,39 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const nodemailer = require("nodemailer");
 
-const DEFAULT_ACCOUNT_NAME = "default";
+const { createSecureStore } = require("./secureStore");
 
-let accountsCache;
+let secureStore;
 const transporters = new Map();
 
 function getTransporter(accountName) {
   const account = getSmtpAccount(accountName);
-  let transporter = transporters.get(account.name);
+  const fingerprint = fingerprintAccount(account);
+  const cached = transporters.get(account.name);
 
-  if (!transporter) {
-    transporter = nodemailer.createTransport(account.transport);
-    transporters.set(account.name, transporter);
+  if (cached && cached.fingerprint === fingerprint) {
+    return cached.transporter;
   }
 
+  if (cached && cached.transporter && typeof cached.transporter.close === "function") {
+    cached.transporter.close();
+  }
+
+  const transporter = nodemailer.createTransport(buildTransportConfig(account));
+  transporters.set(account.name, { fingerprint, transporter });
   return transporter;
 }
 
 async function verifyTransporters(log) {
-  const { accounts } = getSmtpAccounts();
+  const accounts = getSmtpAccounts().accounts;
+  if (accounts.length === 0) {
+    if (typeof log === "function") {
+      log("WARN", "smtp accounts not configured");
+    }
+    return;
+  }
 
   for (const account of accounts) {
     try {
@@ -28,16 +41,16 @@ async function verifyTransporters(log) {
       if (typeof log === "function") {
         log("INFO", "smtp connection verified", {
           smtpAccount: account.name,
-          host: account.transport.host,
-          port: account.transport.port,
+          host: account.host,
+          port: account.port,
         });
       }
     } catch (error) {
       if (typeof log === "function") {
         log("WARN", "smtp verify failed", {
           smtpAccount: account.name,
-          host: account.transport.host,
-          port: account.transport.port,
+          host: account.host,
+          port: account.port,
           message: error && error.message ? error.message : "Unknown SMTP verify error",
         });
       }
@@ -46,28 +59,41 @@ async function verifyTransporters(log) {
 }
 
 async function closeTransporters() {
-  for (const transporter of transporters.values()) {
-    if (transporter && typeof transporter.close === "function") {
-      transporter.close();
+  for (const cached of transporters.values()) {
+    if (cached && cached.transporter && typeof cached.transporter.close === "function") {
+      cached.transporter.close();
     }
   }
   transporters.clear();
+  if (secureStore && typeof secureStore.close === "function") {
+    secureStore.close();
+  }
+  secureStore = undefined;
 }
 
 function getSmtpAccounts() {
-  if (!accountsCache) {
-    accountsCache = loadSmtpAccounts(process.env);
-  }
+  const accounts = getSecureStore().listSmtpAccounts().map(toRuntimeAccount);
+  const byName = new Map(accounts.map((account) => [account.name, account]));
+  const defaultAccountName = getSecureStore().getDefaultSmtpAccountName();
 
-  return accountsCache;
+  return {
+    accounts,
+    byName,
+    defaultAccountName,
+  };
 }
 
 function getSmtpAccount(accountName) {
   const config = getSmtpAccounts();
   const requested = accountName || config.defaultAccountName;
+  if (!requested) {
+    const error = new Error("No SMTP accounts configured.");
+    error.code = "NO_SMTP_ACCOUNTS_CONFIGURED";
+    throw error;
+  }
+
   const name = normalizeSmtpAccountName(requested);
   const account = config.byName.get(name);
-
   if (!account) {
     const error = new Error(`Unknown SMTP account: ${String(requested)}`);
     error.code = "UNKNOWN_SMTP_ACCOUNT";
@@ -107,6 +133,12 @@ function resolveSmtpAccount(accountsConfig, requestedAccount, from) {
     throw new Error("A valid SMTP account config is required.");
   }
 
+  if (accountsConfig.accounts.length === 0) {
+    const error = new Error("No SMTP accounts configured.");
+    error.code = "NO_SMTP_ACCOUNTS_CONFIGURED";
+    throw error;
+  }
+
   if (
     requestedAccount !== undefined &&
     requestedAccount !== null &&
@@ -133,116 +165,50 @@ function resolveSmtpAccount(accountsConfig, requestedAccount, from) {
     }
   }
 
-  return accountsConfig.byName.get(accountsConfig.defaultAccountName);
+  return accountsConfig.byName.get(accountsConfig.defaultAccountName) || accountsConfig.accounts[0];
 }
 
-function loadSmtpAccounts(env) {
-  const explicitAccountNames = parseAccountNames(env.SMTP_ACCOUNTS);
-  const defaultAccountName = normalizeSmtpAccountName(
-    env.SMTP_DEFAULT_ACCOUNT || explicitAccountNames[0] || DEFAULT_ACCOUNT_NAME,
-  );
-
-  if (explicitAccountNames.length > 0 && !explicitAccountNames.includes(defaultAccountName)) {
-    throw new Error(
-      `SMTP_DEFAULT_ACCOUNT must be listed in SMTP_ACCOUNTS (${defaultAccountName}).`,
-    );
+function getSecureStore() {
+  if (!secureStore) {
+    secureStore = createSecureStore();
   }
+  return secureStore;
+}
 
-  const accountNames = explicitAccountNames.length > 0 ? explicitAccountNames : [defaultAccountName];
-  const accounts = accountNames.map((name) =>
-    buildSmtpAccountConfig(env, name, {
-      explicitAccounts: explicitAccountNames.length > 0,
-    }),
-  );
-  const byName = new Map(accounts.map((account) => [account.name, account]));
-
+function toRuntimeAccount(account) {
   return {
-    accounts,
-    byName,
-    defaultAccountName,
+    ...account,
+    identityEmails: uniqueEmails([account.from, account.user]),
   };
 }
 
-function parseAccountNames(value) {
-  if (!value || !String(value).trim()) {
-    return [];
-  }
-
-  const names = [];
-  const seen = new Set();
-
-  for (const item of String(value).split(",")) {
-    if (!String(item).trim()) {
-      continue;
-    }
-    const name = normalizeSmtpAccountName(item);
-    if (seen.has(name)) {
-      continue;
-    }
-    seen.add(name);
-    names.push(name);
-  }
-
-  return names;
-}
-
-function buildSmtpAccountConfig(env, name, options = {}) {
-  const explicitAccounts = Boolean(options.explicitAccounts);
-  const envPrefix = `SMTP_${toEnvToken(name)}_`;
-  const allowLegacyAuthFallback = !explicitAccounts || name === DEFAULT_ACCOUNT_NAME;
-  const secure = toBoolean(readEnv(env, `${envPrefix}SECURE`, env.SMTP_SECURE), false);
-  const port = toInt(readEnv(env, `${envPrefix}PORT`, env.SMTP_PORT), secure ? 465 : 587);
-  const user = readEnv(
-    env,
-    `${envPrefix}USER`,
-    allowLegacyAuthFallback ? env.SMTP_USER : undefined,
-  );
-  const pass = readEnv(
-    env,
-    `${envPrefix}PASS`,
-    allowLegacyAuthFallback ? env.SMTP_PASS : undefined,
-  );
-  const from =
-    readEnv(env, `${envPrefix}FROM`, allowLegacyAuthFallback ? env.MAIL_FROM : undefined) ||
-    user ||
-    (allowLegacyAuthFallback ? env.SMTP_USER : "") ||
-    "no-reply@mailfastapi.local";
-
-  const transport = {
-    host: readEnv(env, `${envPrefix}HOST`, env.SMTP_HOST) || "localhost",
-    port,
-    secure,
+function buildTransportConfig(account) {
+  const config = {
+    host: account.host,
+    port: account.port,
+    secure: account.secure,
     pool: true,
-    maxConnections: toInt(
-      readEnv(env, `${envPrefix}MAX_CONNECTIONS`, env.SMTP_MAX_CONNECTIONS),
-      5,
-    ),
-    maxMessages: toInt(readEnv(env, `${envPrefix}MAX_MESSAGES`, env.SMTP_MAX_MESSAGES), 100),
-    rateLimit: toInt(readEnv(env, `${envPrefix}RATE_LIMIT`, env.SMTP_RATE_LIMIT), 10),
-    rateDelta: toInt(readEnv(env, `${envPrefix}RATE_DELTA`, env.SMTP_RATE_DELTA), 1000),
+    maxConnections: account.maxConnections,
+    maxMessages: account.maxMessages,
+    rateLimit: account.rateLimit,
+    rateDelta: account.rateDelta,
   };
 
-  if (user || pass) {
-    transport.auth = {
-      user: user || "",
-      pass: pass || "",
+  if (account.user || account.pass) {
+    config.auth = {
+      user: account.user || "",
+      pass: account.pass || "",
     };
   }
 
-  return {
-    name,
-    from,
-    identityEmails: uniqueEmails([from, user]),
-    transport,
-  };
+  return config;
 }
 
-function readEnv(env, key, fallback) {
-  const value = env[key];
-  if (value === undefined || value === null || String(value).trim() === "") {
-    return fallback === undefined || fallback === null ? "" : String(fallback).trim();
-  }
-  return String(value).trim();
+function fingerprintAccount(account) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(account))
+    .digest("hex");
 }
 
 function normalizeSmtpAccountName(value) {
@@ -254,10 +220,6 @@ function normalizeSmtpAccountName(value) {
     throw new Error("SMTP account names may contain only letters, numbers, underscores and dashes.");
   }
   return name;
-}
-
-function toEnvToken(value) {
-  return normalizeSmtpAccountName(value).toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
 function uniqueEmails(values) {
@@ -301,18 +263,6 @@ function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function toInt(value, fallback) {
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function toBoolean(value, fallback) {
-  if (value === undefined || value === null || value === "") {
-    return fallback;
-  }
-  return String(value).toLowerCase() === "true";
-}
-
 module.exports = {
   getTransporter,
   verifyTransporter: verifyTransporters,
@@ -325,5 +275,4 @@ module.exports = {
   getDefaultFromForAccount,
   resolveSmtpAccountName,
   resolveSmtpAccount,
-  loadSmtpAccounts,
 };

@@ -79,6 +79,8 @@ const MONITOR_SSE_INTERVAL_MS = Math.max(
   toInt(process.env.MONITOR_SSE_INTERVAL_MS, 1000),
 );
 const MONITOR_TOKEN = String(process.env.MONITOR_TOKEN || "").trim();
+const MONITOR_SESSION_COOKIE = "mailfastapi_monitor";
+const MONITOR_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const MONITOR_MAX_RECENT_ENTRIES = Math.max(
   50,
   toInt(process.env.MONITOR_MAX_RECENT_ENTRIES, 400),
@@ -90,10 +92,6 @@ const MONITOR_MAX_TIMELINE_MINUTES = Math.max(
 const MONITOR_LOGO_FILE_PATH = path.resolve(__dirname, "..", "MailFastApi_Logo.webp");
 
 const authConfig = loadAuthConfig(process.env);
-const DEFAULT_SMTP_ACCOUNT = getDefaultSmtpAccountName();
-const SMTP_ACCOUNT_NAMES = getSmtpAccountNames();
-const SMTP_ACCOUNT_SUMMARIES = getSmtpAccountSummaries();
-const MAIL_FROM = getDefaultFromForAccount(DEFAULT_SMTP_ACCOUNT);
 const monitor = createMonitor({
   maxRecentEntries: MONITOR_MAX_RECENT_ENTRIES,
   maxTimelineMinutes: MONITOR_MAX_TIMELINE_MINUTES,
@@ -128,9 +126,9 @@ const queue = createMailQueue({
 const worker = createWorker({
   queue,
   getTransporter,
-  from: MAIL_FROM,
+  from: "no-reply@mailfastapi.local",
   getFrom: getDefaultFromForAccount,
-  defaultAccount: DEFAULT_SMTP_ACCOUNT,
+  defaultAccount: getDefaultSmtpAccountName(),
   concurrency: WORKER_CONCURRENCY,
   retryAttempts: RETRY_ATTEMPTS,
   retryDelayMs: RETRY_DELAY_MS,
@@ -325,9 +323,9 @@ async function bootstrap() {
     queueBackend: queue.backend,
     queueMaxSize: QUEUE_MAX_SIZE,
     redisQueueKey: queue.backend === "redis" ? REDIS_QUEUE_KEY : undefined,
-    smtpAccounts: SMTP_ACCOUNT_NAMES,
-    smtpAccountDetails: SMTP_ACCOUNT_SUMMARIES,
-    defaultSmtpAccount: DEFAULT_SMTP_ACCOUNT,
+    smtpAccounts: getSmtpAccountNames(),
+    smtpAccountDetails: getSmtpAccountSummaries(),
+    defaultSmtpAccount: getDefaultSmtpAccountName(),
     logFilePath: logger.getLogFilePath(),
     logDbPath: store.getDbPath(),
   });
@@ -395,7 +393,7 @@ function registerMonitorRoutes(targetApp) {
     });
 
     targetApp.get(MONITOR_PATH, monitorAuth, (req, res) => {
-      const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+      const suffix = "";
       const html = renderMonitorPageHtml({
         title: "mailFastApi Live Monitor",
         statsPath: `${MONITOR_STATS_PATH}${suffix}`,
@@ -410,7 +408,7 @@ function registerMonitorRoutes(targetApp) {
     });
 
     targetApp.get(MONITOR_METRICS_VIEW_PATH, monitorAuth, (req, res) => {
-      const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+      const suffix = "";
       const html = renderMonitorMetricsPageHtml({
         title: "mailFastApi Prometheus Metrics View",
         metricsPath: `${METRICS_PATH}${suffix}`,
@@ -421,7 +419,7 @@ function registerMonitorRoutes(targetApp) {
     });
 
     targetApp.get(MONITOR_RAW_VIEW_PATH, monitorAuth, (req, res) => {
-      const suffix = MONITOR_TOKEN ? `?token=${encodeURIComponent(MONITOR_TOKEN)}` : "";
+      const suffix = "";
       const html = renderMonitorRawPageHtml({
         title: "mailFastApi Raw Snapshot View",
         statsPath: `${MONITOR_STATS_PATH}${suffix}`,
@@ -519,9 +517,9 @@ async function collectRuntimeMetrics() {
     activeJobs: worker.getActiveJobs(),
     authMode: authConfig.mode,
     queueBackend: queue.backend,
-    smtpAccounts: SMTP_ACCOUNT_NAMES,
-    smtpAccountDetails: SMTP_ACCOUNT_SUMMARIES,
-    defaultSmtpAccount: DEFAULT_SMTP_ACCOUNT,
+    smtpAccounts: getSmtpAccountNames(),
+    smtpAccountDetails: getSmtpAccountSummaries(),
+    defaultSmtpAccount: getDefaultSmtpAccountName(),
     port: PORT,
     monitorPort: MONITOR_PORT,
   };
@@ -532,15 +530,48 @@ function createMonitorAuthMiddleware(requiredToken) {
     return (req, res, next) => next();
   }
 
+  const sessions = new Map();
+
   return (req, res, next) => {
+    pruneMonitorSessions(sessions);
+
+    const cookies = parseCookieHeader(req.headers.cookie || "");
+    const sessionToken = cookies[MONITOR_SESSION_COOKIE] || "";
+    const session = sessionToken ? sessions.get(sessionToken) : null;
+    if (session && session.expiresAt >= Date.now()) {
+      session.expiresAt = Date.now() + MONITOR_SESSION_TTL_MS;
+      return next();
+    }
+    if (sessionToken) {
+      sessions.delete(sessionToken);
+    }
+
     const headerToken = req.header("x-monitor-token");
     const queryToken = req.query && typeof req.query.token === "string" ? req.query.token : "";
     const provided = headerToken || queryToken;
     if (provided && safeEqualStrings(provided, requiredToken)) {
+      const nextSessionToken = crypto.randomBytes(32).toString("base64url");
+      sessions.set(nextSessionToken, {
+        expiresAt: Date.now() + MONITOR_SESSION_TTL_MS,
+      });
+      setCookie(res, MONITOR_SESSION_COOKIE, nextSessionToken, MONITOR_SESSION_TTL_MS, req);
       return next();
     }
     return res.status(401).json({ error: "Unauthorized monitor access." });
   };
+}
+
+function pruneMonitorSessions(sessions) {
+  if (!sessions || sessions.size === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  for (const [token, session] of sessions.entries()) {
+    if (!session || session.expiresAt < now) {
+      sessions.delete(token);
+    }
+  }
 }
 
 function sendSseEvent(res, eventName, payload) {
@@ -629,6 +660,11 @@ function validateSendPayload(body) {
   try {
     smtpAccount = resolveSmtpAccountName(smtpAccountInput, from);
   } catch (error) {
+    if (error && error.code === "NO_SMTP_ACCOUNTS_CONFIGURED") {
+      return {
+        error: "No SMTP accounts are configured. Add an SMTP account from the secure web panel.",
+      };
+    }
     if (error && error.code === "UNKNOWN_SMTP_ACCOUNT") {
       return {
         error: `Unknown SMTP account: ${smtpAccountInput}.`,
@@ -889,4 +925,51 @@ function safeEqualStrings(left, right) {
   const b = Buffer.from(String(right), "utf8");
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+function setCookie(res, name, value, maxAgeMs, req) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    `Max-Age=${Math.floor(maxAgeMs / 1000)}`,
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (isSecureRequest(req)) {
+    parts.push("Secure");
+  }
+  const existing = res.getHeader("Set-Cookie");
+  if (!existing) {
+    res.setHeader("Set-Cookie", parts.join("; "));
+  } else if (Array.isArray(existing)) {
+    res.setHeader("Set-Cookie", existing.concat(parts.join("; ")));
+  } else {
+    res.setHeader("Set-Cookie", [existing, parts.join("; ")]);
+  }
+}
+
+function parseCookieHeader(header) {
+  const cookies = {};
+  for (const part of String(header || "").split(";")) {
+    const index = part.indexOf("=");
+    if (index <= 0) {
+      continue;
+    }
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch (error) {
+      cookies[key] = value;
+    }
+  }
+  return cookies;
+}
+
+function isSecureRequest(req) {
+  return Boolean(
+    req.secure ||
+      String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() ===
+        "https",
+  );
 }

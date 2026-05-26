@@ -1,8 +1,13 @@
 "use strict";
 
 const path = require("node:path");
+const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const { setTimeout: delay } = require("node:timers/promises");
+
+const { createSecureStore } = require("../../src/secureStore");
+
+const TEST_SECURE_STORE_KEY = "tests_secure_store_secret_key_32_chars_minimum";
 
 function createTestPort() {
   const min = 3200;
@@ -14,6 +19,7 @@ async function startTestServer(overrides = {}) {
   const port = overrides.port || createTestPort();
   const useRealSmtp = Boolean(overrides.useRealSmtp);
   const rootDir = path.resolve(__dirname, "..", "..");
+  const secureStoreDbPath = path.join(rootDir, "data", `test-secure-store-${port}.sqlite`);
 
   const env = {
     ...process.env,
@@ -37,16 +43,16 @@ async function startTestServer(overrides = {}) {
     TOKEN_RATE_LIMIT_MAX: "10000",
     RETRY_ATTEMPTS: "1",
     RETRY_DELAY_MS: "10",
+    SECURE_STORE_KEY: TEST_SECURE_STORE_KEY,
+    SECURE_STORE_DB_PATH: secureStoreDbPath,
     ...overrides.env,
   };
 
-  if (!useRealSmtp) {
-    env.SMTP_ACCOUNTS = "";
-    env.SMTP_DEFAULT_ACCOUNT = "";
-    env.SMTP_HOST = "127.0.0.1";
-    env.SMTP_PORT = "2525";
-    env.SMTP_SECURE = "false";
-  }
+  seedSecureStore({
+    dbPath: secureStoreDbPath,
+    useRealSmtp,
+    rootDir,
+  });
 
   const child = spawn(process.execPath, ["src/app.js"], {
     cwd: rootDir,
@@ -71,6 +77,79 @@ async function startTestServer(overrides = {}) {
     getLogs: () => logs,
     stop: async () => stopTestServer(child),
   };
+}
+
+function seedSecureStore({ dbPath, useRealSmtp, rootDir }) {
+  const store = createSecureStore({
+    dbPath,
+    secretKey: TEST_SECURE_STORE_KEY,
+  });
+
+  try {
+    const account = useRealSmtp
+      ? resolveRealSmtpAccount(rootDir)
+      : {
+          name: "default",
+          host: "127.0.0.1",
+          port: "2525",
+          secure: "false",
+          user: "default@example.com",
+          pass: "",
+          from: "Default <default@example.com>",
+        };
+
+    store.upsertSmtpAccount(account);
+    store.setDefaultSmtpAccountName("default");
+  } finally {
+    store.close();
+  }
+}
+
+function resolveRealSmtpAccount(rootDir) {
+  const account = readRealSmtpAccountFromSecureStore(rootDir);
+  if (account) {
+    return account;
+  }
+  throw new Error(
+    "mailsend mode requires SECURE_STORE_KEY and an encrypted SMTP account in data/mailfastapi-secure.sqlite.",
+  );
+}
+
+function readRealSmtpAccountFromSecureStore(rootDir) {
+  const secretKey = String(process.env.SECURE_STORE_KEY || "").trim();
+  if (!secretKey) {
+    return null;
+  }
+
+  const sourceDbPath = process.env.SECURE_STORE_DB_PATH
+    ? path.resolve(process.env.SECURE_STORE_DB_PATH)
+    : path.join(rootDir, "data", "mailfastapi-secure.sqlite");
+  if (!fs.existsSync(sourceDbPath)) {
+    return null;
+  }
+
+  let sourceStore;
+  try {
+    sourceStore = createSecureStore({
+      dbPath: sourceDbPath,
+      secretKey,
+    });
+    const accountName = process.env.TEST_SMTP_ACCOUNT || sourceStore.getDefaultSmtpAccountName();
+    const account = accountName ? sourceStore.getSmtpAccount(accountName) : null;
+    if (!account) {
+      return null;
+    }
+    return {
+      ...account,
+      name: "default",
+    };
+  } catch (error) {
+    return null;
+  } finally {
+    if (sourceStore) {
+      sourceStore.close();
+    }
+  }
 }
 
 async function stopTestServer(child) {

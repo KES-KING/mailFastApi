@@ -248,7 +248,7 @@ resolve_node_and_npm_binaries() {
     local current_node current_major
     current_node="$(command -v node)"
     current_major="$(node_major_from_bin "$current_node")"
-    if [[ "$current_major" -ge 20 ]]; then
+    if [[ "$current_major" -ge 22 ]] && node_has_sqlite_module "$current_node"; then
       NODE_BIN="$current_node"
       if command -v npm >/dev/null 2>&1; then
         NPM_BIN="$(command -v npm)"
@@ -266,7 +266,8 @@ resolve_node_and_npm_binaries() {
     node22_npm="${node22_prefix}/bin/npm"
     node22_major="$(node_major_from_bin "$node22_bin")"
 
-    if [[ "$node22_major" -ge 20 && -x "$node22_npm" ]]; then
+    if [[ "$node22_major" -ge 22 && -x "$node22_npm" ]] &&
+      node_has_sqlite_module "$node22_bin"; then
       NODE_BIN="$node22_bin"
       NPM_BIN="$node22_npm"
       return
@@ -277,13 +278,13 @@ resolve_node_and_npm_binaries() {
 install_node_lts_if_needed() {
   resolve_node_and_npm_binaries
   if [[ -n "$NODE_BIN" && -n "$NPM_BIN" ]]; then
-    ok "Node.js version is suitable (>=20)."
+    ok "Node.js version is suitable (>=22 with node:sqlite)."
     return
   fi
 
   find_brew
   if [[ -z "$BREW_BIN" ]]; then
-    err "Node.js >=20 required, but Homebrew is missing."
+    err "Node.js >=22 with node:sqlite support required, but Homebrew is missing."
     exit 1
   fi
 
@@ -292,12 +293,17 @@ install_node_lts_if_needed() {
 
   resolve_node_and_npm_binaries
   if [[ -z "$NODE_BIN" || -z "$NPM_BIN" ]]; then
-    err "Could not resolve Node.js >=20 binaries after installation."
+    err "Could not resolve Node.js >=22 with node:sqlite support after installation."
     err "Check your PATH or Homebrew node@22 installation."
     exit 1
   fi
 
   ok "Node.js installed successfully."
+}
+
+node_has_sqlite_module() {
+  local node_bin="$1"
+  [[ -x "$node_bin" ]] && "$node_bin" -e "require('node:sqlite')" >/dev/null 2>&1
 }
 
 ensure_redis_running() {
@@ -345,6 +351,33 @@ set_env_default() {
   printf '\n%s=%s\n' "$key" "$value" >> "$env_path"
 }
 
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local env_path="$APP_DIR/$ENV_FILE"
+  local tmp_path
+  tmp_path="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    index($0, key "=") == 1 {
+      if (!updated) {
+        print key "=" value
+        updated = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=" value
+      }
+    }
+  ' "$env_path" > "$tmp_path"
+  cat "$tmp_path" > "$env_path"
+  rm -f "$tmp_path"
+}
+
 generate_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 24
@@ -377,13 +410,21 @@ ensure_env_file() {
 
   local port
   local monitor_token
+  local secure_store_key
   port="$(get_env_value "PORT" "3000")"
   monitor_token="$(get_env_value "MONITOR_TOKEN" "")"
+  secure_store_key="$(get_env_value "SECURE_STORE_KEY" "")"
 
   if [[ -z "$monitor_token" ]]; then
     monitor_token="$(generate_secret)"
     warn "MONITOR_TOKEN was empty. Generated a secure token."
-    printf '\nMONITOR_TOKEN=%s\n' "$monitor_token" >> "$env_path"
+    set_env_value "MONITOR_TOKEN" "$monitor_token"
+  fi
+
+  if [[ -z "$secure_store_key" || "$secure_store_key" == "change_me_with_at_least_32_random_characters" ]]; then
+    secure_store_key="$(generate_secret)"
+    warn "SECURE_STORE_KEY was empty/default. Generated a secure vault key."
+    set_env_value "SECURE_STORE_KEY" "$secure_store_key"
   fi
 
   set_env_default "MONITOR_ENABLED" "true"

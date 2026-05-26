@@ -4,6 +4,7 @@
 
 - Protocol: HTTP/1.1
 - Content-Type: `application/json`
+- Runtime: Node.js `>=22.5.0`
 - Base URL: `http://localhost:3000` (default)
 - Monitor base URL: same as `Base URL` by default. If `MONITOR_PORT` is set to a different value than `PORT`, monitor endpoints are exposed on `http://localhost:<MONITOR_PORT>`.
 - Legacy web panel URL: `http://localhost:8080` (root path, no `/monitor` suffix).
@@ -31,7 +32,7 @@
 | `GET /monitor*` | public* | public* | public* |
 | `GET /metrics` | public* | public* | public* |
 
-\* If `MONITOR_TOKEN` is set, monitor/metrics endpoints require `x-monitor-token` header (or `?token=` query).
+\* Core monitor/metrics endpoints require `x-monitor-token` when `MONITOR_TOKEN` is set. The separate legacy web panel uses its own password session and proxies the core token server-side.
 
 ## Endpoints
 
@@ -88,7 +89,7 @@ Notes:
 
 - `to` can be either a string (`"a@x.com"` or `"a@x.com,b@y.com"`) or an array (`["a@x.com","b@y.com"]`).
 - `smtpAccount`, `from`, `text`, and `attachments` are optional.
-- If `smtpAccount` is omitted, the API uses `SMTP_DEFAULT_ACCOUNT`.
+- If `smtpAccount` is omitted, the API uses the default account saved in the encrypted SMTP vault.
 - If `from` matches a configured account sender address, that account is selected automatically.
 - `attachments[].content` must be base64.
 - Inline attachments are supported via `attachments[].content_id` (mapped to SMTP `cid`).
@@ -146,12 +147,18 @@ Related endpoints:
 
 The separate web panel service listens on fixed port `8080`.
 
-- `GET /` -> live monitor UI
-- `GET /stats` -> proxied core monitor snapshot
-- `GET /stream` -> proxied core monitor SSE stream
-- `GET /metrics-view` -> formatted Prometheus metrics page
-- `GET /raw-view` -> formatted snapshot page
-- `GET /metrics` -> proxied Prometheus text metrics
+- First access redirects to `GET /setup` and requires creating the web panel password.
+- After setup, unauthenticated users are redirected to `GET /login`.
+- `GET /` -> live monitor UI at the root URL
+- `GET /smtp` -> encrypted SMTP account management
+- `POST /smtp/accounts` -> create/update an SMTP account
+- `POST /smtp/default` -> set default SMTP account
+- `POST /smtp/accounts/delete` -> delete an SMTP account
+- `GET /stats` -> authenticated proxied core monitor snapshot
+- `GET /stream` -> authenticated proxied core monitor SSE stream
+- `GET /metrics-view` -> authenticated formatted Prometheus metrics page
+- `GET /raw-view` -> authenticated formatted snapshot page
+- `GET /metrics` -> authenticated proxied Prometheus text metrics
 
 The live UI includes SMTP account filtering. Use `smtpAccount` in `/send` requests to route mail and to make account-specific views reliable.
 
@@ -165,34 +172,15 @@ The live UI includes SMTP account filtering. Use `smtpAccount` in `/send` reques
 
 ## SMTP Account Routing
 
-Legacy single-account mode still uses:
+SMTP credentials are not read from `.env` in production runtime.
 
-```env
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=no-reply@example.com
-SMTP_PASS=...
-SMTP_SECURE=false
-MAIL_FROM=No Reply <no-reply@example.com>
-```
+1. Set `SECURE_STORE_KEY` in `.env` to a long random value.
+2. Start the web panel on `http://localhost:8080`.
+3. Create the web panel password on first access.
+4. Open `SMTP Accounts` and add accounts such as `2fa`, `info`, or `marketing`.
+5. Set one saved account as the default.
 
-For multiple senders, define account names and per-account credentials:
-
-```env
-SMTP_ACCOUNTS=2fa,info,marketing
-SMTP_DEFAULT_ACCOUNT=info
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_SECURE=false
-
-SMTP_2FA_USER=security@example.com
-SMTP_2FA_PASS=...
-SMTP_2FA_FROM=Security <security@example.com>
-
-SMTP_INFO_USER=info@example.com
-SMTP_INFO_PASS=...
-SMTP_INFO_FROM=Info <info@example.com>
-```
+The encrypted vault is `data/mailfastapi-secure.sqlite` by default. SMTP account records are encrypted with AES-256-GCM using a key derived from `SECURE_STORE_KEY`.
 
 Then send with:
 
@@ -232,22 +220,22 @@ Installer behavior for environment config:
 
 - reads `.env.example`
 - creates/updates `.env`
-- prompts each key interactively
-- `Enter` accepts default value shown in prompt
+- generates `SECURE_STORE_KEY` and `MONITOR_TOKEN` if missing/default
+- appends missing service defaults without overwriting existing custom values
 
 Installer capabilities:
 
 - installs OS dependencies (curl, build toolchain, sqlite, redis)
-- installs Node.js LTS (>=20) if needed
+- installs Node.js 22 LTS if needed
 - ensures Redis service is enabled and running
 - installs npm dependencies in project directory
-- creates and enables systemd unit (`mailfastapi.service` by default)
+- creates and enables systemd units (`mailfastapi-core.service`, `mailfastapi-web.service`)
 
 Post-install useful commands:
 
 ```bash
-sudo systemctl status mailfastapi
-sudo journalctl -u mailfastapi -f
+sudo systemctl status mailfastapi-core mailfastapi-web
+sudo journalctl -u mailfastapi-core -u mailfastapi-web -f
 ```
 
 ## cURL Examples

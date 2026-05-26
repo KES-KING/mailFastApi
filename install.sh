@@ -196,8 +196,8 @@ install_node_lts_if_needed() {
   local major
   major="$(node_major_version)"
 
-  if [[ "$major" -ge 20 ]]; then
-    ok "Node.js version is suitable (>=20)."
+  if [[ "$major" -ge 22 ]] && node_has_sqlite_module; then
+    ok "Node.js version is suitable (>=22 with node:sqlite)."
     return
   fi
 
@@ -228,12 +228,16 @@ install_node_lts_if_needed() {
   esac
 
   major="$(node_major_version)"
-  if [[ "$major" -lt 20 ]]; then
-    err "Node.js installation failed to reach >=20."
+  if [[ "$major" -lt 22 ]] || ! node_has_sqlite_module; then
+    err "Node.js installation failed to reach >=22 with node:sqlite support."
     exit 1
   fi
 
   ok "Node.js installed successfully."
+}
+
+node_has_sqlite_module() {
+  node -e "require('node:sqlite')" >/dev/null 2>&1
 }
 
 ensure_redis_running() {
@@ -282,6 +286,33 @@ set_env_default() {
   printf '\n%s=%s\n' "$key" "$value" >> "$env_path"
 }
 
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local env_path="$APP_DIR/$ENV_FILE"
+  local tmp_path
+  tmp_path="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    index($0, key "=") == 1 {
+      if (!updated) {
+        print key "=" value
+        updated = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=" value
+      }
+    }
+  ' "$env_path" > "$tmp_path"
+  cat "$tmp_path" > "$env_path"
+  rm -f "$tmp_path"
+}
+
 generate_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 24
@@ -314,13 +345,21 @@ ensure_env_file() {
 
   local port
   local monitor_token
+  local secure_store_key
   port="$(get_env_value "PORT" "3000")"
   monitor_token="$(get_env_value "MONITOR_TOKEN" "")"
+  secure_store_key="$(get_env_value "SECURE_STORE_KEY" "")"
 
   if [[ -z "$monitor_token" ]]; then
     monitor_token="$(generate_secret)"
     warn "MONITOR_TOKEN was empty. Generated a secure token."
-    printf '\nMONITOR_TOKEN=%s\n' "$monitor_token" >> "$env_path"
+    set_env_value "MONITOR_TOKEN" "$monitor_token"
+  fi
+
+  if [[ -z "$secure_store_key" || "$secure_store_key" == "change_me_with_at_least_32_random_characters" ]]; then
+    secure_store_key="$(generate_secret)"
+    warn "SECURE_STORE_KEY was empty/default. Generated a secure vault key."
+    set_env_value "SECURE_STORE_KEY" "$secure_store_key"
   fi
 
   set_env_default "MONITOR_ENABLED" "true"

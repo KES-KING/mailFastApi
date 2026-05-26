@@ -8,6 +8,7 @@ Core design:
 - Worker processes consume Redis jobs and deliver via pooled SMTP accounts.
 - System logs are persisted to SQLite and file logs simultaneously.
 - Monitor web panel is served by a separate web service.
+- SMTP credentials and web admin password verifier are stored in an encrypted SQLite vault.
 
 ## Architecture
 
@@ -15,7 +16,7 @@ Core design:
 Client -> Core API (/send, /auth/token, /health) -> Queue -> Worker -> SMTP Provider
                                      \-> Structured Logger -> SQLite + File + Console
 Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
-                 -> Update Control (updater.sh)
+                 -> SMTP Account Manager + Update Control (updater.sh)
 ```
 
 ## Key Features
@@ -23,6 +24,8 @@ Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/st
 - Fast ACK pattern (`202 queued`) without waiting SMTP round-trip
 - Redis-backed mail queue (`QUEUE_BACKEND=redis`)
 - Cached Nodemailer pooled transporters per SMTP account
+- Encrypted SMTP account vault (`data/mailfastapi-secure.sqlite`) protected by `SECURE_STORE_KEY`
+- First-run web panel password setup, session cookies, CSRF protection, and login lockout
 - Optional per-mail `smtpAccount`/`from`, multi-recipient `to`, and base64 attachments
 - Worker retry logic and latency metrics (`queueLatencyMs`, `dispatchLatencyMs`)
 - JWT auth (`/auth/token` + Bearer on `/send`) and rate limiting
@@ -33,6 +36,7 @@ Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/st
   - `npm run log mailsender`
   - `npm run log:mailsender`
 - Legacy web monitor at `http://localhost:8080` with SMTP account filtering
+- SMTP account management at `http://localhost:8080/smtp`
 
 ## Project Structure
 
@@ -46,6 +50,8 @@ mailFastApi/
 |   |-- memoryMailQueue.js
 |   |-- redisMailQueue.js
 |   |-- mailer.js
+|   |-- secureStore.js
+|   |-- webAuth.js
 |   |-- queue.js
 |   |-- worker.js
 |   |-- systemLogger.js
@@ -74,10 +80,9 @@ Important variables:
   - `LOG_DB_PATH=data/mailfastapi.sqlite`
   - `LOG_DIR=logs`
   - `LOG_FILE_NAME=system.log`
-- SMTP:
-  - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE`
-  - Optional multi-account routing: `SMTP_ACCOUNTS`, `SMTP_DEFAULT_ACCOUNT`
-  - Per-account overrides: `SMTP_2FA_USER`, `SMTP_2FA_PASS`, `SMTP_2FA_FROM`, etc.
+- Secure store:
+  - `SECURE_STORE_KEY` encrypts/decrypts `data/mailfastapi-secure.sqlite`
+  - SMTP host/user/password/from values are managed from the web panel, not `.env`
 - Send payload controls:
   - `REQUEST_BODY_LIMIT` (default `10mb`)
   - `MAX_ATTACHMENTS` (default `10`)
@@ -94,6 +99,8 @@ Important variables:
 
 ## Run
 
+Requires Node.js `>=22.5.0` because the encrypted vault uses the built-in `node:sqlite` module.
+
 ```bash
 npm install
 npm run start:core
@@ -102,9 +109,11 @@ npm run start:web
 
 Core URL (default): `http://localhost:3000`
 
-Web monitor URL (default): `http://localhost:8080`
+Web panel URL (fixed): `http://localhost:8080`
 
-Prometheus metrics URL (default): `http://localhost:8080/metrics`
+On first web panel access, create the admin password. Then open `SMTP Accounts` and add accounts such as `2fa`, `info`, or `marketing`. Runtime mail delivery reads these accounts from the encrypted SQLite vault.
+
+Prometheus metrics proxy URL (requires web login): `http://localhost:8080/metrics`
 
 Formatted monitor pages:
 
@@ -121,6 +130,7 @@ Project root includes `install.sh` to install dependencies, set up Redis, instal
 Installer also:
 
 - creates/updates `.env` from `.env.example`
+- generates `SECURE_STORE_KEY` and `MONITOR_TOKEN` if missing/default
 - appends missing core/web settings
 - checks core/web ports
 - creates runtime directories and permissions
@@ -191,7 +201,7 @@ Endpoint details are in:
 
 - [docs/API_DOCS.md](./docs/API_DOCS.md)
 
-Multi-account example:
+Multi-account send example, after adding the account in the web panel:
 
 ```bash
 curl -X POST http://localhost:3000/send \

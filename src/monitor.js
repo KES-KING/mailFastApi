@@ -391,6 +391,9 @@ function renderMonitorPageHtml(options = {}) {
   const helpUrl = escapeHtml(options.helpUrl || "https://github.com/KES-KING/mailFastApi");
   const updateCheckPath = escapeHtml(options.updateCheckPath || "/monitor/update/check");
   const updateApplyPath = escapeHtml(options.updateApplyPath || "/monitor/update/apply");
+  const csrfToken = escapeHtml(options.csrfToken || "");
+  const logoutPath = escapeHtml(options.logoutPath || "/logout");
+  const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
 
   return `<!doctype html>
 <html lang="en">
@@ -853,6 +856,11 @@ function renderMonitorPageHtml(options = {}) {
         title="GitHub Help"
         aria-label="GitHub Help"
       >?</a>
+      <a class="action-btn" href="${smtpSettingsPath}">SMTP Accounts</a>
+      <form method="post" action="${logoutPath}" style="margin:0;">
+        <input type="hidden" name="_csrf" value="${csrfToken}" />
+        <button type="submit" class="action-btn">Logout</button>
+      </form>
       <button id="check-update-btn" type="button" class="action-btn">Guncellemeleri Denetle</button>
     </div>
   </header>
@@ -979,6 +987,7 @@ function renderMonitorPageHtml(options = {}) {
     const streamPath = "${streamPath}";
     const updateCheckPath = "${updateCheckPath}";
     const updateApplyPath = "${updateApplyPath}";
+    const csrfToken = "${csrfToken}";
     const state = {
       snapshot: null,
       levelFilter: "ALL",
@@ -1110,6 +1119,7 @@ function renderMonitorPageHtml(options = {}) {
           headers: {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "X-CSRF-Token": csrfToken,
           },
           body: JSON.stringify({ confirm: true }),
         });

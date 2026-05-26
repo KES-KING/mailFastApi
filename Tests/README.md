@@ -20,6 +20,8 @@ Tests/
 |   `-- api.integration.test.js
 `-- unit/
     |-- auth.test.js
+    |-- mailer.test.js
+    |-- secureStore.test.js
     `-- queue.test.js
 ```
 
@@ -60,20 +62,17 @@ npm run test:mailsend
 
 Behavior:
 
-- Reads your `.env` SMTP values.
+- Reads the real SMTP account from the encrypted secure store (`SECURE_STORE_KEY` + `data/mailfastapi-secure.sqlite`) and copies it into an isolated test vault.
 - Requires `TEST_MAIL_TO`.
 - Sends real emails and validates send completion via runtime logs.
 
 ## 4. Required Environment for `mailsend`
 
-Minimum required in `.env`:
+Preferred minimum required in `.env`:
 
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_USER`
-- `SMTP_PASS`
-- `SMTP_SECURE`
-- Optional multi-account settings (`SMTP_ACCOUNTS`, `SMTP_DEFAULT_ACCOUNT`, `SMTP_<ACCOUNT>_*`)
+- `SECURE_STORE_KEY`
+- an existing encrypted SMTP account in `data/mailfastapi-secure.sqlite`
+- optional `TEST_SMTP_ACCOUNT` to choose a non-default saved account
 - `TEST_MAIL_TO`
 
 Also ensure auth defaults exist:
@@ -86,7 +85,7 @@ Also ensure auth defaults exist:
 
 When `npm test mailsend` runs:
 
-1. Test server starts with real SMTP env.
+1. Test server copies the selected real SMTP account into an isolated test secure store.
 2. Test gets JWT via `/auth/token`.
 3. Probe email is sent to `TEST_MAIL_TO`.
 4. Test parses server logs and waits for matching `mail sent` event.
@@ -121,7 +120,7 @@ Performance metrics:
 Typical failures and checks:
 
 1. SMTP auth failure:
-   - verify `SMTP_USER`/`SMTP_PASS`
+   - verify the saved SMTP user/password in `http://localhost:8080/smtp`
    - for Gmail/Outlook use app password if required
 2. TLS mismatch:
    - `SMTP_SECURE=true` usually with port `465`
