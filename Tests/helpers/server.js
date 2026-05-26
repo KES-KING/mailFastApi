@@ -41,6 +41,8 @@ async function startTestServer(overrides = {}) {
   };
 
   if (!useRealSmtp) {
+    env.SMTP_ACCOUNTS = "";
+    env.SMTP_DEFAULT_ACCOUNT = "";
     env.SMTP_HOST = "127.0.0.1";
     env.SMTP_PORT = "2525";
     env.SMTP_SECURE = "false";

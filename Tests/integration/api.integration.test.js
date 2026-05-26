@@ -97,6 +97,48 @@ describe("API integration", () => {
     assert.deepEqual(body, { status: "queued" });
   });
 
+  test("POST /send with explicit default SMTP account queues mail", async () => {
+    const tokenBody = await getToken(baseUrl);
+
+    const response = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+      },
+      body: JSON.stringify({
+        smtpAccount: "default",
+        to: "user@example.com",
+        subject: "Queued Mail",
+        html: "<h1>Hello</h1>",
+      }),
+    });
+
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.deepEqual(body, { status: "queued" });
+  });
+
+  test("POST /send rejects unknown SMTP account", async () => {
+    const tokenBody = await getToken(baseUrl);
+
+    const response = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+      },
+      body: JSON.stringify({
+        smtpAccount: "missing",
+        to: "user@example.com",
+        subject: "Unknown Account",
+        html: "<h1>Hello</h1>",
+      }),
+    });
+
+    assert.equal(response.status, 400);
+  });
+
   test("POST /send with invalid payload returns 400", async () => {
     const tokenBody = await getToken(baseUrl);
 

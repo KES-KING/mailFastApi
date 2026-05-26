@@ -73,6 +73,7 @@ Minimum required in `.env`:
 - `SMTP_USER`
 - `SMTP_PASS`
 - `SMTP_SECURE`
+- Optional multi-account settings (`SMTP_ACCOUNTS`, `SMTP_DEFAULT_ACCOUNT`, `SMTP_<ACCOUNT>_*`)
 - `TEST_MAIL_TO`
 
 Also ensure auth defaults exist:

@@ -7,7 +7,15 @@ const http = require("node:http");
 const path = require("node:path");
 const express = require("express");
 
-const { getTransporter, closeTransporter, verifyTransporter } = require("./mailer");
+const {
+  getTransporter,
+  closeTransporters,
+  verifyTransporters,
+  getDefaultSmtpAccountName,
+  getDefaultFromForAccount,
+  getSmtpAccountNames,
+  resolveSmtpAccountName,
+} = require("./mailer");
 const { createWorker } = require("./worker");
 const { loadAuthConfig, authenticateClient, issueAccessToken, verifyJwt } = require("./auth");
 const { createSystemStore } = require("./systemStore");
@@ -25,8 +33,6 @@ const WORKER_CONCURRENCY = toInt(process.env.WORKER_CONCURRENCY, 2);
 const RETRY_ATTEMPTS = Math.max(1, toInt(process.env.RETRY_ATTEMPTS, 3));
 const RETRY_DELAY_MS = Math.max(0, toInt(process.env.RETRY_DELAY_MS, 250));
 const SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.SHUTDOWN_TIMEOUT_MS, 20000));
-const MAIL_FROM =
-  process.env.MAIL_FROM || process.env.SMTP_USER || "no-reply@mailfastapi.local";
 const SEND_SCOPE = "mail:send";
 const REQUEST_BODY_LIMIT = String(process.env.REQUEST_BODY_LIMIT || "10mb").trim() || "10mb";
 const MAX_ATTACHMENTS = Math.max(0, toInt(process.env.MAX_ATTACHMENTS, 10));
@@ -83,6 +89,9 @@ const MONITOR_MAX_TIMELINE_MINUTES = Math.max(
 const MONITOR_LOGO_FILE_PATH = path.resolve(__dirname, "..", "MailFastApi_Logo.webp");
 
 const authConfig = loadAuthConfig(process.env);
+const DEFAULT_SMTP_ACCOUNT = getDefaultSmtpAccountName();
+const SMTP_ACCOUNT_NAMES = getSmtpAccountNames();
+const MAIL_FROM = getDefaultFromForAccount(DEFAULT_SMTP_ACCOUNT);
 const monitor = createMonitor({
   maxRecentEntries: MONITOR_MAX_RECENT_ENTRIES,
   maxTimelineMinutes: MONITOR_MAX_TIMELINE_MINUTES,
@@ -94,7 +103,6 @@ app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 const monitorApp = MONITOR_SEPARATE_PORT ? express() : app;
 monitorApp.disable("x-powered-by");
 
-const transporter = getTransporter();
 const store = createSystemStore({ dbPath: LOG_DB_PATH });
 const logger = createSystemLogger({
   store,
@@ -117,8 +125,10 @@ const queue = createMailQueue({
 
 const worker = createWorker({
   queue,
-  transporter,
+  getTransporter,
   from: MAIL_FROM,
+  getFrom: getDefaultFromForAccount,
+  defaultAccount: DEFAULT_SMTP_ACCOUNT,
   concurrency: WORKER_CONCURRENCY,
   retryAttempts: RETRY_ATTEMPTS,
   retryDelayMs: RETRY_DELAY_MS,
@@ -200,6 +210,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       traceId,
       jobId,
       to: normalizedPayload.to,
+      smtpAccount: normalizedPayload.smtpAccount,
       authSub: req.auth ? req.auth.sub : undefined,
     },
     { traceId, source: "api" },
@@ -208,6 +219,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   try {
     await queue.enqueue({
       id: jobId,
+      smtpAccount: normalizedPayload.smtpAccount,
       to: normalizedPayload.to,
       from: normalizedPayload.from || undefined,
       subject: normalizedPayload.subject,
@@ -240,6 +252,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
     {
       traceId,
       jobId,
+      smtpAccount: normalizedPayload.smtpAccount,
       queueDepth,
       queueBackend: queue.backend,
     },
@@ -285,7 +298,7 @@ async function bootstrap() {
   await queue.start();
 
   worker.start();
-  verifyTransporter(runtimeLog);
+  verifyTransporters(runtimeLog);
   await listenServer(server, PORT);
 
   if (monitorServer) {
@@ -306,6 +319,8 @@ async function bootstrap() {
     queueBackend: queue.backend,
     queueMaxSize: QUEUE_MAX_SIZE,
     redisQueueKey: queue.backend === "redis" ? REDIS_QUEUE_KEY : undefined,
+    smtpAccounts: SMTP_ACCOUNT_NAMES,
+    defaultSmtpAccount: DEFAULT_SMTP_ACCOUNT,
     logFilePath: logger.getLogFilePath(),
     logDbPath: store.getDbPath(),
   });
@@ -332,7 +347,7 @@ async function gracefulShutdown(signal) {
     await closeServer(server);
     await worker.stop({ drainTimeoutMs: SHUTDOWN_TIMEOUT_MS });
     await queue.stop();
-    await closeTransporter();
+    await closeTransporters();
     await logger.close();
     store.close();
     process.exit(0);
@@ -592,6 +607,26 @@ function validateSendPayload(body) {
     from = body.from.trim();
   }
 
+  let smtpAccountInput;
+  if (body.smtpAccount !== undefined) {
+    if (typeof body.smtpAccount !== "string" || body.smtpAccount.trim() === "") {
+      return { error: "`smtpAccount` must be a non-empty string when provided." };
+    }
+    smtpAccountInput = body.smtpAccount.trim();
+  }
+
+  let smtpAccount;
+  try {
+    smtpAccount = resolveSmtpAccountName(smtpAccountInput, from);
+  } catch (error) {
+    if (error && error.code === "UNKNOWN_SMTP_ACCOUNT") {
+      return {
+        error: `Unknown SMTP account: ${smtpAccountInput}.`,
+      };
+    }
+    return { error: "Invalid SMTP account." };
+  }
+
   let text;
   if (body.text !== undefined) {
     if (typeof body.text !== "string") {
@@ -609,6 +644,7 @@ function validateSendPayload(body) {
     error: null,
     payload: {
       to: recipients.length === 1 ? recipients[0] : recipients,
+      smtpAccount,
       from,
       subject: body.subject.trim(),
       html: body.html,

@@ -6,7 +6,10 @@ function createWorker(options) {
   const {
     queue,
     transporter,
+    getTransporter,
     from,
+    getFrom,
+    defaultAccount = "default",
     concurrency = 2,
     retryAttempts = 3,
     retryDelayMs = 250,
@@ -17,7 +20,10 @@ function createWorker(options) {
     throw new Error("`queue` is required.");
   }
 
-  if (!transporter || typeof transporter.sendMail !== "function") {
+  if (
+    typeof getTransporter !== "function" &&
+    (!transporter || typeof transporter.sendMail !== "function")
+  ) {
     throw new Error("A valid nodemailer transporter is required.");
   }
 
@@ -56,8 +62,17 @@ function createWorker(options) {
       const sendStart = Date.now();
 
       try {
+        const smtpAccount = job.smtpAccount || defaultAccount;
+        const selectedTransporter =
+          typeof getTransporter === "function" ? getTransporter(smtpAccount) : transporter;
+        if (!selectedTransporter || typeof selectedTransporter.sendMail !== "function") {
+          throw new Error(`A valid transporter is required for SMTP account: ${smtpAccount}`);
+        }
+
+        const accountFrom =
+          typeof getFrom === "function" ? getFrom(smtpAccount) : undefined;
         const mailOptions = {
-          from: job.from || from || undefined,
+          from: job.from || accountFrom || from || undefined,
           to: job.to,
           subject: job.subject,
           html: job.html,
@@ -71,10 +86,12 @@ function createWorker(options) {
           mailOptions.attachments = attachments;
         }
 
-        const info = await transporter.sendMail(mailOptions);
+        const info = await selectedTransporter.sendMail(mailOptions);
 
         logger("INFO", "mail sent", {
           jobId: job.id,
+          smtpAccount,
+          from: mailOptions.from,
           to: job.to,
           attempt,
           attachmentCount: attachments.length,
@@ -90,6 +107,7 @@ function createWorker(options) {
         if (isLastAttempt) {
           logger("ERROR", "mail failed", {
             jobId: job.id,
+            smtpAccount: job.smtpAccount || defaultAccount,
             to: job.to,
             attempt,
             message: error && error.message ? error.message : "Unknown SMTP error",
@@ -99,6 +117,7 @@ function createWorker(options) {
 
         logger("WARN", "mail send failed, retrying", {
           jobId: job.id,
+          smtpAccount: job.smtpAccount || defaultAccount,
           to: job.to,
           attempt,
           nextAttemptInMs: baseRetryDelay * attempt,

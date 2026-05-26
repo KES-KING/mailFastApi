@@ -5,7 +5,7 @@ High-performance Node.js email microservice with split core/web architecture.
 Core design:
 
 - Incoming email requests are written to Redis queue immediately.
-- Worker processes consume Redis jobs and deliver via pooled SMTP.
+- Worker processes consume Redis jobs and deliver via pooled SMTP accounts.
 - System logs are persisted to SQLite and file logs simultaneously.
 - Monitor web panel is served by a separate web service.
 
@@ -22,8 +22,8 @@ Web Panel Service -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metric
 
 - Fast ACK pattern (`202 queued`) without waiting SMTP round-trip
 - Redis-backed mail queue (`QUEUE_BACKEND=redis`)
-- Global singleton Nodemailer pooled transporter
-- Optional per-mail `from`, multi-recipient `to`, and base64 attachments
+- Cached Nodemailer pooled transporters per SMTP account
+- Optional per-mail `smtpAccount`/`from`, multi-recipient `to`, and base64 attachments
 - Worker retry logic and latency metrics (`queueLatencyMs`, `dispatchLatencyMs`)
 - JWT auth (`/auth/token` + Bearer on `/send`) and rate limiting
 - Dual log persistence:
@@ -75,6 +75,8 @@ Important variables:
   - `LOG_FILE_NAME=system.log`
 - SMTP:
   - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_SECURE`
+  - Optional multi-account routing: `SMTP_ACCOUNTS`, `SMTP_DEFAULT_ACCOUNT`
+  - Per-account overrides: `SMTP_2FA_USER`, `SMTP_2FA_PASS`, `SMTP_2FA_FROM`, etc.
 - Send payload controls:
   - `REQUEST_BODY_LIMIT` (default `10mb`)
   - `MAX_ATTACHMENTS` (default `10`)
@@ -186,6 +188,15 @@ Dashboard includes:
 Endpoint details are in:
 
 - [docs/API_DOCS.md](./docs/API_DOCS.md)
+
+Multi-account example:
+
+```bash
+curl -X POST http://localhost:3000/send \
+  -H "Authorization: Bearer <JWT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d "{\"smtpAccount\":\"2fa\",\"to\":\"user@example.com\",\"subject\":\"Kod\",\"html\":\"<p>123456</p>\"}"
+```
 
 
 

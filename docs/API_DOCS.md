@@ -11,7 +11,7 @@
 
 - `/send` does **not** send mail synchronously.
 - Request payload is pushed to Redis queue (`REDIS_QUEUE_KEY`).
-- Background workers consume queue and deliver via SMTP pool.
+- Background workers consume queue and deliver via the selected SMTP account pool.
 - API returns `202` immediately after queue write succeeds.
 
 ## Authentication Modes
@@ -67,6 +67,7 @@ Request:
 
 ```json
 {
+  "smtpAccount": "info",
   "to": "user@example.com",
   "subject": "Test Mail",
   "html": "<h1>Hello</h1>",
@@ -85,7 +86,9 @@ Request:
 Notes:
 
 - `to` can be either a string (`"a@x.com"` or `"a@x.com,b@y.com"`) or an array (`["a@x.com","b@y.com"]`).
-- `from`, `text`, and `attachments` are optional.
+- `smtpAccount`, `from`, `text`, and `attachments` are optional.
+- If `smtpAccount` is omitted, the API uses `SMTP_DEFAULT_ACCOUNT`.
+- If `from` matches a configured account sender address, that account is selected automatically.
 - `attachments[].content` must be base64.
 - Inline attachments are supported via `attachments[].content_id` (mapped to SMTP `cid`).
 
@@ -145,6 +148,48 @@ Related endpoints:
 - Queue key: `REDIS_QUEUE_KEY`
 - Connection URL: `REDIS_URL`
 - Command timeout: `REDIS_COMMAND_TIMEOUT_MS`
+
+## SMTP Account Routing
+
+Legacy single-account mode still uses:
+
+```env
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=no-reply@example.com
+SMTP_PASS=...
+SMTP_SECURE=false
+MAIL_FROM=No Reply <no-reply@example.com>
+```
+
+For multiple senders, define account names and per-account credentials:
+
+```env
+SMTP_ACCOUNTS=2fa,info,marketing
+SMTP_DEFAULT_ACCOUNT=info
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+
+SMTP_2FA_USER=security@example.com
+SMTP_2FA_PASS=...
+SMTP_2FA_FROM=Security <security@example.com>
+
+SMTP_INFO_USER=info@example.com
+SMTP_INFO_PASS=...
+SMTP_INFO_FROM=Info <info@example.com>
+```
+
+Then send with:
+
+```json
+{
+  "smtpAccount": "2fa",
+  "to": "user@example.com",
+  "subject": "2FA Code",
+  "html": "<p>Your code is 123456.</p>"
+}
+```
 
 ## Logging Notes
 
