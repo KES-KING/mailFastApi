@@ -43,13 +43,15 @@ function loadAuthConfig(env) {
   };
 }
 
-function issueAccessToken(config, clientId, scopes) {
+function issueAccessToken(config, clientId, scopes, roles) {
   const scopeList = Array.isArray(scopes) && scopes.length > 0 ? scopes : ["mail:send"];
+  const roleList = Array.isArray(roles) && roles.length > 0 ? roles : resolveClientRoles(config, clientId);
 
   const token = jwt.sign(
     {
       sub: clientId,
       scope: scopeList.join(" "),
+      roles: roleList,
     },
     config.jwtSecret,
     {
@@ -93,6 +95,12 @@ function verifyJwt(config, rawToken, requiredScope) {
   return payload;
 }
 
+function hasRequiredRole(payload, requiredRoles) {
+  const required = Array.isArray(requiredRoles) ? requiredRoles : [requiredRoles];
+  const roles = normalizeScopes(payload && payload.roles);
+  return required.filter(Boolean).length === 0 || required.some((role) => roles.includes(role));
+}
+
 function authenticateClient(config, clientId, clientSecret) {
   if (!clientId || !clientSecret) {
     return null;
@@ -119,6 +127,7 @@ function parseClients(env) {
       clientId: env.AUTH_CLIENT_ID,
       clientSecret: env.AUTH_CLIENT_SECRET,
       scopes: ["mail:send"],
+      roles: ["operator"],
     });
   }
 
@@ -147,11 +156,17 @@ function parseClients(env) {
         clientId: entry.clientId,
         clientSecret: entry.clientSecret,
         scopes: Array.isArray(entry.scopes) && entry.scopes.length > 0 ? entry.scopes : ["mail:send"],
+        roles: Array.isArray(entry.roles) && entry.roles.length > 0 ? entry.roles : ["operator"],
       });
     }
   }
 
   return clients;
+}
+
+function resolveClientRoles(config, clientId) {
+  const client = (config.clients || []).find((entry) => entry.clientId === clientId);
+  return client && Array.isArray(client.roles) && client.roles.length > 0 ? client.roles : ["operator"];
 }
 
 function normalizeScopes(scopeClaim) {
@@ -198,4 +213,5 @@ module.exports = {
   issueAccessToken,
   verifyJwt,
   authenticateClient,
+  hasRequiredRole,
 };

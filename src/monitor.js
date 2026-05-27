@@ -57,6 +57,15 @@ function createMonitor(options = {}) {
         activeJobs: numberOrNull(runtime.activeJobs),
         authMode: runtime.authMode || null,
         queueBackend: runtime.queueBackend || null,
+        deliveryEvents:
+          runtime.deliveryEvents && typeof runtime.deliveryEvents === "object"
+            ? { ...runtime.deliveryEvents }
+            : {},
+        deliveryPolicy:
+          runtime.deliveryPolicy && typeof runtime.deliveryPolicy === "object"
+            ? { ...runtime.deliveryPolicy }
+            : {},
+        dkim: runtime.dkim && typeof runtime.dkim === "object" ? { ...runtime.dkim } : {},
         smtpAccounts: Array.isArray(runtime.smtpAccounts) ? runtime.smtpAccounts.slice() : [],
         smtpAccountDetails: Array.isArray(runtime.smtpAccountDetails)
           ? runtime.smtpAccountDetails.map((account) => ({ ...account }))
@@ -78,6 +87,8 @@ function createMonitor(options = {}) {
     const queueDepth = numberOrZero(runtime.queueDepth);
     const processingDepth = numberOrZero(runtime.processingDepth);
     const activeJobs = numberOrZero(runtime.activeJobs);
+    const deliveryEvents =
+      runtime.deliveryEvents && typeof runtime.deliveryEvents === "object" ? runtime.deliveryEvents : {};
 
     const lines = [
       "# HELP mailfastapi_uptime_seconds Process uptime in seconds.",
@@ -119,6 +130,12 @@ function createMonitor(options = {}) {
       "# HELP mailfastapi_mail_retry_total Total mail retries.",
       "# TYPE mailfastapi_mail_retry_total counter",
       `mailfastapi_mail_retry_total ${totals.mailRetryTotal}`,
+      "",
+      "# HELP mailfastapi_delivery_events_1h_total Delivery events recorded in operational store for the last hour.",
+      "# TYPE mailfastapi_delivery_events_1h_total gauge",
+      ...Object.keys(deliveryEvents)
+        .sort()
+        .map((event) => `mailfastapi_delivery_events_1h_total{event="${escapeLabel(event)}"} ${numberOrZero(deliveryEvents[event])}`),
       "",
       "# HELP mailfastapi_auth_token_issued_total Total issued auth tokens.",
       "# TYPE mailfastapi_auth_token_issued_total counter",
@@ -2262,6 +2279,10 @@ function escapeHtml(value) {
 function formatNonceAttr(value) {
   const nonce = escapeHtml(value || "");
   return nonce ? ` nonce="${nonce}"` : "";
+}
+
+function escapeLabel(value) {
+  return String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
 }
 
 function toInt(value, fallback) {

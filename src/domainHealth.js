@@ -6,6 +6,7 @@ async function checkDomainHealth(domain, options = {}) {
   const normalizedDomain = normalizeDomain(domain);
   const selectors = normalizeSelectors(options.selectors || ["default", "mail"]);
   const resolver = options.resolver || dns.resolveTxt;
+  const mxResolver = options.mxResolver || dns.resolveMx;
 
   const spf = await checkTxt(normalizedDomain, resolver, (record) =>
     record.toLowerCase().startsWith("v=spf1"),
@@ -22,12 +23,19 @@ async function checkDomainHealth(domain, options = {}) {
       )),
     });
   }
+  const mx = await checkMx(normalizedDomain, mxResolver);
+  const mtaSts = await checkTxt(`_mta-sts.${normalizedDomain}`, resolver, (record) =>
+    record.toLowerCase().startsWith("v=stsv1"),
+  );
+  const tlsRpt = await checkTxt(`_smtp._tls.${normalizedDomain}`, resolver, (record) =>
+    record.toLowerCase().startsWith("v=tlsrptv1"),
+  );
 
   const dmarcPolicy = parseDmarcPolicy(dmarc.matching[0] || "");
   return {
     domain: normalizedDomain,
     checkedAt: new Date().toISOString(),
-    ok: spf.ok && dmarc.ok && dmarcPolicy !== "none" && dkim.some((entry) => entry.ok),
+    ok: spf.ok && dmarc.ok && dmarcPolicy !== "none" && dkim.some((entry) => entry.ok) && mx.ok,
     spf,
     dmarc: {
       ...dmarc,
@@ -35,6 +43,9 @@ async function checkDomainHealth(domain, options = {}) {
       productionReady: dmarcPolicy === "quarantine" || dmarcPolicy === "reject",
     },
     dkim,
+    mx,
+    mtaSts,
+    tlsRpt,
   };
 }
 
@@ -50,6 +61,26 @@ async function checkTxt(name, resolver, predicate) {
       records: [],
       matching: [],
       error: error && error.code ? error.code : error && error.message ? error.message : "TXT_LOOKUP_FAILED",
+    };
+  }
+}
+
+async function checkMx(name, resolver) {
+  try {
+    const records = await resolver(name);
+    const normalized = records
+      .map((record) => ({
+        exchange: String(record.exchange || "").toLowerCase(),
+        priority: Number(record.priority) || 0,
+      }))
+      .filter((record) => record.exchange)
+      .sort((left, right) => left.priority - right.priority);
+    return { ok: normalized.length > 0, records: normalized };
+  } catch (error) {
+    return {
+      ok: false,
+      records: [],
+      error: error && error.code ? error.code : error && error.message ? error.message : "MX_LOOKUP_FAILED",
     };
   }
 }

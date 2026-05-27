@@ -16,11 +16,14 @@ describe("domain health checks", () => {
       ["example.com", [["v=spf1 include:_spf.example.com -all"]]],
       ["_dmarc.example.com", [["v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com"]]],
       ["default._domainkey.example.com", [["v=DKIM1; k=rsa; p=abc123"]]],
+      ["_mta-sts.example.com", [["v=STSv1; id=20260527"]]],
+      ["_smtp._tls.example.com", [["v=TLSRPTv1; rua=mailto:tls@example.com"]]],
     ]);
 
     const result = await checkDomainHealth("Example.com", {
       selectors: ["default"],
       resolver: createResolver(records),
+      mxResolver: async () => [{ exchange: "mx.example.com", priority: 10 }],
     });
 
     assert.equal(result.domain, "example.com");
@@ -28,6 +31,9 @@ describe("domain health checks", () => {
     assert.equal(result.spf.ok, true);
     assert.equal(result.dmarc.policy, "quarantine");
     assert.equal(result.dkim[0].ok, true);
+    assert.equal(result.mx.ok, true);
+    assert.equal(result.mtaSts.ok, true);
+    assert.equal(result.tlsRpt.ok, true);
   });
 
   test("treats DMARC p=none as not production-ready", async () => {
@@ -40,6 +46,7 @@ describe("domain health checks", () => {
     const result = await checkDomainHealth("example.com", {
       selectors: ["default"],
       resolver: createResolver(records),
+      mxResolver: async () => [{ exchange: "mx.example.com", priority: 10 }],
     });
 
     assert.equal(result.ok, false);

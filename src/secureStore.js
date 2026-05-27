@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
+const { buildOtpAuthUrl, generateTotpSecret, verifyTotp } = require("./totp");
 
 const DEFAULT_STORE_PATH = "data/mailfastapi-secure.sqlite";
 const SECRET_ENV_NAME = "SECURE_STORE_KEY";
@@ -13,9 +14,12 @@ const SETTINGS_NAMESPACE = "settings";
 const ADMIN_NAMESPACE = "web_admin";
 const DEFAULT_ACCOUNT_SETTING = "smtp_default_account";
 const ADMIN_PASSWORD_SETTING = "password";
+const ADMIN_TOTP_SETTING = "totp";
+const ADMIN_TOTP_PENDING_SETTING = "totp_pending";
 const MIN_SECRET_LENGTH = 32;
 const MIN_PASSWORD_LENGTH = 12;
 const MAX_ACCOUNT_NAME_LENGTH = 64;
+const RECOVERY_CODE_COUNT = 8;
 const SCRYPT_OPTIONS = Object.freeze({
   N: 32768,
   r: 8,
@@ -27,7 +31,7 @@ function createSecureStore(options = {}) {
   const dbPath = path.resolve(
     options.dbPath || process.env.SECURE_STORE_DB_PATH || DEFAULT_STORE_PATH,
   );
-  const secretKey = validateSecretKey(options.secretKey || process.env[SECRET_ENV_NAME]);
+  const secretKey = validateSecretKey(resolveSecretKey(options));
 
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
@@ -197,6 +201,78 @@ function createSecureStore(options = {}) {
     return crypto.timingSafeEqual(actual, expected);
   }
 
+  function hasAdminTotp() {
+    const record = readEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_SETTING);
+    return Boolean(record && record.enabled === true && record.secret);
+  }
+
+  function getAdminMfaStatus() {
+    return {
+      totpEnabled: hasAdminTotp(),
+      totpPending: Boolean(readEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_PENDING_SETTING)),
+    };
+  }
+
+  function beginAdminTotpEnrollment(options = {}) {
+    const issuer = cleanString(options.issuer || "MailFastApi");
+    const accountName = cleanString(options.accountName || "admin@mailfastapi.local");
+    const record = {
+      version: 1,
+      type: "totp",
+      issuer,
+      accountName,
+      secret: generateTotpSecret(),
+      createdAtMs: Date.now(),
+    };
+    writeEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_PENDING_SETTING, record);
+    return publicTotpEnrollment(record);
+  }
+
+  function getPendingAdminTotpEnrollment() {
+    const record = readEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_PENDING_SETTING);
+    return record ? publicTotpEnrollment(record) : null;
+  }
+
+  function confirmAdminTotpEnrollment(code) {
+    const pending = readEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_PENDING_SETTING);
+    if (!pending || !pending.secret) {
+      const error = new Error("TOTP enrollment has not been started.");
+      error.code = "MFA_ENROLLMENT_REQUIRED";
+      throw error;
+    }
+    if (!verifyTotp(code, pending.secret)) {
+      const error = new Error("Invalid MFA verification code.");
+      error.code = "INVALID_MFA_CODE";
+      throw error;
+    }
+
+    const recoveryCodes = generateRecoveryCodes();
+    writeEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_SETTING, {
+      version: 1,
+      type: "totp",
+      enabled: true,
+      issuer: pending.issuer,
+      accountName: pending.accountName,
+      secret: pending.secret,
+      recoveryCodes: recoveryCodes.map(hashRecoveryCode),
+      createdAtMs: pending.createdAtMs,
+      enabledAtMs: Date.now(),
+    });
+    itemDeleteStmt.run(ADMIN_NAMESPACE, ADMIN_TOTP_PENDING_SETTING);
+    return { enabled: true, recoveryCodes };
+  }
+
+  function verifyAdminMfaCode(code) {
+    const record = readEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_SETTING);
+    if (!record || record.enabled !== true || !record.secret) {
+      return false;
+    }
+    if (verifyTotp(code, record.secret)) {
+      return true;
+    }
+    return consumeRecoveryCode(record, code);
+  }
+
   function close() {
     db.close();
   }
@@ -267,6 +343,41 @@ function createSecureStore(options = {}) {
     return crypto.scryptSync(password, salt, 64, SCRYPT_OPTIONS);
   }
 
+  function publicTotpEnrollment(record) {
+    return {
+      issuer: record.issuer,
+      accountName: record.accountName,
+      secret: record.secret,
+      otpauthUrl: buildOtpAuthUrl({
+        issuer: record.issuer,
+        accountName: record.accountName,
+        secret: record.secret,
+      }),
+    };
+  }
+
+  function consumeRecoveryCode(record, code) {
+    const normalized = normalizeRecoveryCode(code);
+    if (!normalized || !Array.isArray(record.recoveryCodes)) {
+      return false;
+    }
+
+    const matchIndex = record.recoveryCodes.findIndex((entry) =>
+      verifyRecoveryCodeHash(normalized, entry),
+    );
+    if (matchIndex < 0) {
+      return false;
+    }
+
+    const nextRecoveryCodes = record.recoveryCodes.filter((_, index) => index !== matchIndex);
+    writeEncrypted(ADMIN_NAMESPACE, ADMIN_TOTP_SETTING, {
+      ...record,
+      recoveryCodes: nextRecoveryCodes,
+      lastRecoveryCodeUsedAtMs: Date.now(),
+    });
+    return true;
+  }
+
   return {
     listSmtpAccounts,
     getSmtpAccount,
@@ -278,6 +389,12 @@ function createSecureStore(options = {}) {
     hasAdminPassword,
     setAdminPassword,
     verifyAdminPassword,
+    hasAdminTotp,
+    getAdminMfaStatus,
+    beginAdminTotpEnrollment,
+    getPendingAdminTotpEnrollment,
+    confirmAdminTotpEnrollment,
+    verifyAdminMfaCode,
     close,
     getDbPath,
   };
@@ -294,6 +411,17 @@ function validateSecretKey(value) {
     throw new Error(`${SECRET_ENV_NAME} must be changed from the example value.`);
   }
   return secret;
+}
+
+function resolveSecretKey(options = {}) {
+  if (options.secretKey) {
+    return options.secretKey;
+  }
+  const filePath = String(process.env.SECURE_STORE_KEY_FILE || "").trim();
+  if (filePath) {
+    return fs.readFileSync(path.resolve(filePath), "utf8").trim();
+  }
+  return process.env[SECRET_ENV_NAME];
 }
 
 function validatePassword(value) {
@@ -428,6 +556,43 @@ function extractEmailAddress(value) {
   }
   const emailMatch = text.match(/[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+/);
   return emailMatch ? emailMatch[0].toLowerCase() : "";
+}
+
+function generateRecoveryCodes() {
+  const codes = [];
+  for (let index = 0; index < RECOVERY_CODE_COUNT; index += 1) {
+    const raw = crypto.randomBytes(8).toString("hex").toUpperCase();
+    codes.push(`${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`);
+  }
+  return codes;
+}
+
+function hashRecoveryCode(code) {
+  const normalized = normalizeRecoveryCode(code);
+  const salt = crypto.randomBytes(16);
+  return {
+    salt: salt.toString("base64"),
+    hash: crypto.createHash("sha256").update(salt).update(normalized).digest("base64"),
+  };
+}
+
+function verifyRecoveryCodeHash(normalizedCode, entry) {
+  if (!entry || !entry.salt || !entry.hash) {
+    return false;
+  }
+  const salt = Buffer.from(entry.salt, "base64");
+  const expected = Buffer.from(entry.hash, "base64");
+  const actual = crypto.createHash("sha256").update(salt).update(normalizedCode).digest();
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+function normalizeRecoveryCode(value) {
+  return String(value || "")
+    .replace(/[^a-z0-9]/gi, "")
+    .toUpperCase();
 }
 
 module.exports = {

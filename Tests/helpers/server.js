@@ -47,6 +47,7 @@ async function startTestServer(overrides = {}) {
     RETRY_DELAY_MS: "10",
     SECURE_STORE_KEY: TEST_SECURE_STORE_KEY,
     SECURE_STORE_DB_PATH: secureStoreDbPath,
+    BOUNCE_WEBHOOK_TOKEN: "test-webhook-token",
     ...overrides.env,
   };
 

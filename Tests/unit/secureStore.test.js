@@ -7,6 +7,7 @@ const path = require("node:path");
 const { describe, test } = require("node:test");
 
 const { createSecureStore } = require("../../src/secureStore");
+const { generateTotp } = require("../../src/totp");
 
 const TEST_SECRET = "tests_secure_store_secret_key_32_chars_minimum";
 
@@ -90,6 +91,36 @@ describe("secure store", () => {
     }
   });
 
+  test("enrolls TOTP MFA and consumes recovery codes once", () => {
+    const dbPath = createTempDbPath();
+    const store = createSecureStore({ dbPath, secretKey: TEST_SECRET });
+    try {
+      store.setAdminPassword("valid-test-password");
+      const enrollment = store.beginAdminTotpEnrollment({
+        issuer: "MailFastApi",
+        accountName: "admin@example.com",
+      });
+      const code = generateTotp(enrollment.secret);
+      const result = store.confirmAdminTotpEnrollment(code);
+
+      assert.equal(store.hasAdminTotp(), true);
+      assert.equal(store.getAdminMfaStatus().totpEnabled, true);
+      assert.equal(store.verifyAdminMfaCode(generateTotp(enrollment.secret)), true);
+      assert.equal(result.recoveryCodes.length, 8);
+
+      const recoveryCode = result.recoveryCodes[0];
+      assert.equal(store.verifyAdminMfaCode(recoveryCode), true);
+      assert.equal(store.verifyAdminMfaCode(recoveryCode), false);
+
+      const fileText = fs.readFileSync(dbPath, "latin1");
+      assert.equal(fileText.includes(enrollment.secret), false);
+      assert.equal(fileText.includes(recoveryCode), false);
+    } finally {
+      store.close();
+      cleanupDb(dbPath);
+    }
+  });
+
   test("rejects the example secure store key", () => {
     assert.throws(
       () =>
@@ -99,6 +130,29 @@ describe("secure store", () => {
         }),
       /must be changed from the example value/,
     );
+  });
+
+  test("can read secure store key from file source", () => {
+    const dbPath = createTempDbPath();
+    const keyPath = path.join(os.tmpdir(), `mailfastapi-secure-key-${process.pid}-${Date.now()}.txt`);
+    const previous = process.env.SECURE_STORE_KEY_FILE;
+    fs.writeFileSync(keyPath, `${TEST_SECRET}\n`);
+    process.env.SECURE_STORE_KEY_FILE = keyPath;
+
+    const store = createSecureStore({ dbPath });
+    try {
+      store.setAdminPassword("valid-test-password");
+      assert.equal(store.verifyAdminPassword("valid-test-password"), true);
+    } finally {
+      store.close();
+      cleanupDb(dbPath);
+      fs.unlinkSync(keyPath);
+      if (previous === undefined) {
+        delete process.env.SECURE_STORE_KEY_FILE;
+      } else {
+        process.env.SECURE_STORE_KEY_FILE = previous;
+      }
+    }
   });
 });
 

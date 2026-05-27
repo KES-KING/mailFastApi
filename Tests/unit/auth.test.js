@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const { describe, test } = require("node:test");
 
-const { loadAuthConfig, issueAccessToken, verifyJwt } = require("../../src/auth");
+const { loadAuthConfig, issueAccessToken, verifyJwt, hasRequiredRole } = require("../../src/auth");
 
 describe("auth module", () => {
   test("issues and verifies JWT with required scope", () => {
@@ -24,6 +24,7 @@ describe("auth module", () => {
 
     const payload = verifyJwt(config, issued.access_token, "mail:send");
     assert.equal(payload.sub, "client-a");
+    assert.equal(hasRequiredRole(payload, "operator"), true);
   });
 
   test("rejects token when scope is missing", () => {

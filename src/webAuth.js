@@ -4,11 +4,19 @@ const crypto = require("node:crypto");
 
 const SESSION_COOKIE = "mailfastapi_session";
 const FORM_COOKIE = "mailfastapi_form";
-const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const SESSION_TTL_MS = Math.max(
+  5 * 60 * 1000,
+  toInt(process.env.WEB_SESSION_IDLE_TIMEOUT_MS, 8 * 60 * 60 * 1000),
+);
+const SESSION_ABSOLUTE_TTL_MS = Math.max(
+  SESSION_TTL_MS,
+  toInt(process.env.WEB_SESSION_ABSOLUTE_TIMEOUT_MS, 12 * 60 * 60 * 1000),
+);
 const FORM_TTL_MS = 10 * 60 * 1000;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 5;
+const SESSION_BIND_IP = toBoolean(process.env.WEB_SESSION_BIND_IP, true);
 
 function createWebAuth(options) {
   const { secureStore } = options || {};
@@ -79,6 +87,7 @@ function createWebAuth(options) {
     const csrfToken = crypto.randomBytes(32).toString("base64url");
     sessions.set(token, {
       csrfToken,
+      role: "admin",
       createdAt: Date.now(),
       expiresAt: Date.now() + SESSION_TTL_MS,
       ip: getClientIp(req),
@@ -99,8 +108,12 @@ function createWebAuth(options) {
     const cookies = parseCookies(req.headers.cookie || "");
     const token = cookies[SESSION_COOKIE] || "";
     const session = token ? sessions.get(token) : null;
-    if (!session || session.expiresAt < Date.now()) {
+    if (!session || session.expiresAt < Date.now() || session.createdAt + SESSION_ABSOLUTE_TTL_MS < Date.now()) {
       if (token) sessions.delete(token);
+      return null;
+    }
+    if (SESSION_BIND_IP && session.ip !== getClientIp(req)) {
+      sessions.delete(token);
       return null;
     }
     session.expiresAt = Date.now() + SESSION_TTL_MS;
@@ -139,7 +152,22 @@ function createWebAuth(options) {
     return next();
   }
 
-  function login(req, res, password) {
+  function requireRole(...roles) {
+    const allowed = roles.flat().map((role) => String(role || "").trim()).filter(Boolean);
+    return (req, res, next) => {
+      const session = req.webSession || getSession(req);
+      if (!session) {
+        return res.status(401).json({ error: "Unauthorized web session." });
+      }
+      if (allowed.length > 0 && !allowed.includes(session.role)) {
+        return res.status(403).json({ error: "Insufficient web role." });
+      }
+      req.webSession = session;
+      return next();
+    };
+  }
+
+  function login(req, res, password, mfaCode) {
     const ip = getClientIp(req);
     const lock = getLoginLock(ip);
     if (lock.locked) {
@@ -155,6 +183,13 @@ function createWebAuth(options) {
       throw error;
     }
 
+    if (isMfaEnabled() && !secureStore.verifyAdminMfaCode(mfaCode)) {
+      recordLoginFailure(ip);
+      const error = new Error("Invalid MFA verification code.");
+      error.code = mfaCode ? "INVALID_MFA_CODE" : "MFA_REQUIRED";
+      throw error;
+    }
+
     failuresByIp.delete(ip);
     return createSession(req, res);
   }
@@ -162,6 +197,20 @@ function createWebAuth(options) {
   function getCsrfToken(req) {
     const session = req.webSession || getSession(req);
     return session ? session.csrfToken : "";
+  }
+
+  function revokeAllSessions() {
+    const count = sessions.size;
+    sessions.clear();
+    return count;
+  }
+
+  function isMfaEnabled() {
+    return (
+      typeof secureStore.hasAdminTotp === "function" &&
+      secureStore.hasAdminTotp() === true &&
+      typeof secureStore.verifyAdminMfaCode === "function"
+    );
   }
 
   function pruneExpired() {
@@ -206,10 +255,13 @@ function createWebAuth(options) {
     createFormToken,
     verifyFormToken,
     requireAuth,
+    requireRole,
     requireCsrf,
     login,
     destroySession,
     getCsrfToken,
+    revokeAllSessions,
+    isMfaEnabled,
   };
 }
 
@@ -282,6 +334,21 @@ function safeEqual(left, right) {
   const b = Buffer.from(String(right), "utf8");
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
+}
+
+function toInt(value, fallback) {
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
 module.exports = {

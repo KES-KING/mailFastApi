@@ -213,6 +213,45 @@ describe("API integration", () => {
     assert.equal(oversizedIdempotencyKey.status, 400);
   });
 
+  test("bounce and complaint webhooks require token and ingest events", async () => {
+    const unauthorized = await fetch(`${baseUrl}/webhooks/bounce`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "hard@example.com", type: "hard" }),
+    });
+    assert.equal(unauthorized.status, 401);
+
+    const bounce = await fetch(`${baseUrl}/webhooks/bounce`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-webhook-token": "test-webhook-token",
+      },
+      body: JSON.stringify({
+        email: "hard@example.com",
+        tenantId: "tenant_a",
+        responseCode: 550,
+        response: "user unknown",
+      }),
+    });
+    assert.equal(bounce.status, 202);
+    assert.equal((await bounce.json()).suppressed, true);
+
+    const complaint = await fetch(`${baseUrl}/webhooks/complaint`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-webhook-token": "test-webhook-token",
+      },
+      body: JSON.stringify({
+        email: "complaint@example.com",
+        tenantId: "tenant_a",
+      }),
+    });
+    assert.equal(complaint.status, 202);
+    assert.equal((await complaint.json()).suppressed, true);
+  });
+
   test("POST /send rejects unknown SMTP account", async () => {
     const tokenBody = await getToken(baseUrl);
 

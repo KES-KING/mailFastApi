@@ -88,4 +88,64 @@ describe("operational store", () => {
       db.close();
     }
   });
+
+  test("records lifecycle states and delivery counters", () => {
+    const store = createOperationalStore({ dbPath: createTempDbPath() });
+    try {
+      store.recordJobLifecycle("job-1", "queued", { tenantId: "tenant_a" });
+      store.recordJobLifecycle("job-1", "processing", { tenantId: "tenant_a" });
+      store.recordJobLifecycle("job-1", "delivered", {
+        tenantId: "tenant_a",
+        details: { messageId: "message-1" },
+      });
+
+      store.recordDeliveryEvent("queued", {
+        tenantId: "tenant_a",
+        smtpAccount: "default",
+        recipients: ["user@example.com"],
+        jobId: "job-1",
+      });
+      store.recordDeliveryEvent("sent", {
+        tenantId: "tenant_a",
+        smtpAccount: "default",
+        recipients: ["user@example.com"],
+        jobId: "job-1",
+      });
+
+      const lifecycle = store.getJobLifecycle("job-1");
+      assert.deepEqual(lifecycle.map((entry) => entry.state), ["queued", "processing", "delivered"]);
+      assert.equal(
+        store.countDeliveryEvents({
+          tenantId: "tenant_a",
+          smtpAccount: "default",
+          domain: "example.com",
+          events: ["queued", "sent"],
+          sinceMs: Date.now() - 1000,
+        }),
+        2,
+      );
+      assert.equal(store.getDeliveryEventTotals(Date.now() - 1000).sent, 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("ingests hard bounces and complaints into suppression", () => {
+    const store = createOperationalStore({ dbPath: createTempDbPath() });
+    try {
+      store.insertBounceEvent("hard@example.com", {
+        tenantId: "tenant_a",
+        bounceType: "hard",
+        reason: "hard_bounce",
+      });
+      store.insertComplaintEvent("complaint@example.com", {
+        tenantId: "tenant_a",
+      });
+
+      assert.ok(store.getSuppression("hard@example.com", "tenant_a"));
+      assert.ok(store.getSuppression("complaint@example.com", "tenant_a"));
+    } finally {
+      store.close();
+    }
+  });
 });

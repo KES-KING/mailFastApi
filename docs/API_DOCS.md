@@ -74,6 +74,7 @@ Request:
   "smtpAccount": "info",
   "tenantId": "tenant_a",
   "category": "transactional",
+  "returnPath": "bounces+custom@example.com",
   "to": "user@example.com",
   "subject": "Test Mail",
   "html": "<h1>Hello</h1>",
@@ -92,7 +93,7 @@ Request:
 Notes:
 
 - `to` can be either a string (`"a@x.com"` or `"a@x.com,b@y.com"`) or an array (`["a@x.com","b@y.com"]`).
-- `smtpAccount`, `from`, `text`, and `attachments` are optional.
+- `smtpAccount`, `from`, `returnPath`, `text`, and `attachments` are optional.
 - `tenantId` is optional and can also be supplied with `x-tenant-id`.
 - `category` defaults to `transactional`; accepted values are `transactional`, `security`, `notification`, `marketing`, `bulk`.
 - If `smtpAccount` is omitted, the API uses the default account saved in the encrypted SMTP vault.
@@ -106,6 +107,7 @@ Notes:
   recipients return `409`.
 - Marketing/bulk messages include one-click unsubscribe headers when `PUBLIC_BASE_URL` and
   `UNSUBSCRIBE_SECRET` are configured.
+- If `BOUNCE_DOMAIN` is configured, the API generates a dedicated Return-Path when `returnPath` is omitted.
 
 Success `202`:
 
@@ -157,7 +159,7 @@ Related endpoints:
 - `GET /monitor/metrics-view` -> formatted Prometheus metrics page
 - `GET /monitor/raw-view` -> formatted raw snapshot JSON page
 - `GET /metrics` -> Prometheus text metrics
-- `GET /domain-health/:domain` -> SPF, DKIM selector, and DMARC policy health diagnostics
+- `GET /domain-health/:domain` -> SPF, DKIM selector, DMARC, MX, MTA-STS, and TLS-RPT diagnostics
 
 Domain health example:
 
@@ -176,12 +178,38 @@ unsubscribe URL.
 
 Successful unsubscribe creates a tenant-level suppression entry in the operational store.
 
+## Bounce and Complaint Webhooks
+
+Webhook ingestion is enabled with `BOUNCE_WEBHOOK_ENABLED=true` and protected by
+`x-webhook-token: <BOUNCE_WEBHOOK_TOKEN>`.
+
+Hard bounce example:
+
+```bash
+curl -X POST http://localhost:3000/webhooks/bounce \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-token: <TOKEN>" \
+  -d "{\"email\":\"user@example.com\",\"tenantId\":\"tenant_a\",\"responseCode\":550,\"response\":\"user unknown\"}"
+```
+
+Complaint example:
+
+```bash
+curl -X POST http://localhost:3000/webhooks/complaint \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-token: <TOKEN>" \
+  -d "{\"email\":\"user@example.com\",\"tenantId\":\"tenant_a\",\"provider\":\"ses\"}"
+```
+
+Hard bounces and complaints automatically create tenant-level suppression entries.
+
 ## Legacy Web Panel
 
 The separate web panel service listens on fixed port `8080`.
 
 - First access redirects to `GET /setup` and requires creating the web panel password.
-- After setup, unauthenticated users are redirected to `GET /login`.
+- `GET /mfa/setup` and `POST /mfa/setup` enroll local TOTP MFA before the first panel session is created.
+- After setup, unauthenticated users are redirected to `GET /login` and must submit password + TOTP/recovery code.
 - `GET /` -> live monitor UI at the root URL
 - `GET /smtp` -> encrypted SMTP account management
 - `POST /smtp/accounts` -> create/update an SMTP account
@@ -192,6 +220,7 @@ The separate web panel service listens on fixed port `8080`.
 - `GET /metrics-view` -> authenticated formatted Prometheus metrics page
 - `GET /raw-view` -> authenticated formatted snapshot page
 - `GET /metrics` -> authenticated proxied Prometheus text metrics
+- `POST /sessions/revoke` -> admin-only revoke-all web sessions
 - `GET /update` -> authenticated legacy update control page with progress bar
 - `GET /update/check` -> authenticated secure updater check
 - `POST /update/start` -> authenticated secure updater background start with CSRF
@@ -215,11 +244,26 @@ When `WEB_UPDATE_TOKEN` is set, update endpoints also require the `x-update-toke
 
 Production mode rejects `QUEUE_BACKEND=memory`.
 
+## Delivery Policy and DKIM
+
+`DELIVERY_POLICY_ENABLED=true` enables domain/account quota checks from operational delivery events.
+Built-in policy buckets are Gmail, Outlook, Yahoo, and Corporate. Override with:
+
+- `DOMAIN_POLICIES_JSON`
+- `SMTP_ACCOUNT_POLICIES_JSON`
+
+`DKIM_SIGNING_ENABLED=true` signs outgoing messages with Nodemailer DKIM options. Configure:
+
+- `DKIM_DOMAIN`
+- `DKIM_SELECTOR`
+- `DKIM_PRIVATE_KEY_PATH` or `DKIM_PRIVATE_KEY`
+- `DKIM_KEYS_JSON` for multiple domains
+
 ## SMTP Account Routing
 
 SMTP credentials are not read from `.env` in production runtime.
 
-1. Set `SECURE_STORE_KEY` in `.env` to a long random value.
+1. Set `SECURE_STORE_KEY` in `.env` to a long random value, or set `SECURE_STORE_KEY_FILE` to a mounted secret file.
 2. Start the web panel on `http://localhost:8080`.
 3. Create the web panel password on first access.
 4. Open `SMTP Accounts` and add accounts such as `2fa`, `info@example.com`, or `Bilgi Maili`.

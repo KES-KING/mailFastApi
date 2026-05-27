@@ -25,12 +25,15 @@ Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/st
 - Redis-backed mail queue (`QUEUE_BACKEND=redis`) with processing leases, visibility timeout, and ack
 - API/worker role split with `MAILFASTAPI_ROLE=api|worker|all`
 - Production safety guard with `PRODUCTION_MODE=true`
-- Idempotency records, suppression list, dead-letter jobs, and hash-chained audit events in operational SQLite
+- Idempotency records, lifecycle states, suppression list, delivery events, dead-letter jobs, and hash-chained audit events in operational SQLite
+- Domain/account delivery policies for Gmail, Outlook, Yahoo, and corporate mail systems
+- Bounce classifier plus protected hard-bounce and complaint webhook ingestion
 - One-click unsubscribe support for marketing/bulk mail
-- SPF/DKIM/DMARC domain health diagnostics on the monitor API
+- Dedicated Return-Path generation and optional DKIM signing
+- SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT domain health diagnostics on the monitor API
 - Cached Nodemailer pooled transporters per SMTP account
 - Encrypted SMTP account vault (`data/mailfastapi-secure.sqlite`) protected by `SECURE_STORE_KEY`
-- First-run web panel password setup, session cookies, CSRF protection, and login lockout
+- First-run web panel password + TOTP MFA setup, session cookies, CSRF protection, and login lockout
 - Optional per-mail `smtpAccount`/`from`, multi-recipient `to`, and base64 attachments
 - Worker retry logic and latency metrics (`queueLatencyMs`, `dispatchLatencyMs`)
 - JWT auth (`/auth/token` + Bearer on `/send`) and rate limiting
@@ -58,6 +61,9 @@ mailFastApi/
 |   |-- operationalStore.js
 |   |-- productionGuard.js
 |   |-- domainHealth.js
+|   |-- deliveryPolicy.js
+|   |-- bounceClassifier.js
+|   |-- dkimConfig.js
 |   |-- secureStore.js
 |   |-- webAuth.js
 |   |-- queue.js
@@ -97,6 +103,7 @@ Important variables:
   - `LOG_FILE_NAME=system.log`
 - Secure store:
   - `SECURE_STORE_KEY` encrypts/decrypts `data/mailfastapi-secure.sqlite`
+  - `SECURE_STORE_KEY_FILE` can point to a mounted secret file instead of storing the key in `.env`
   - SMTP host/user/password/from values are managed from the web panel, not `.env`
 - Send payload controls:
   - `REQUEST_BODY_LIMIT` (default `10mb`)
@@ -109,6 +116,7 @@ Important variables:
 - Web service:
   - fixed legacy panel port: `8080`
   - `WEB_HOST`, `WEB_CORE_BASE_URL`
+  - `WEB_MFA_REQUIRED`, `WEB_SESSION_IDLE_TIMEOUT_MS`, `WEB_SESSION_ABSOLUTE_TIMEOUT_MS`
   - `WEB_ENABLE_UPDATER`, `WEB_UPDATE_SCRIPT`, `WEB_UPDATE_TIMEOUT_MS`
   - `WEB_UPDATE_TOKEN` (optional `x-update-token` header protection for update endpoints)
 - Updater:
@@ -119,6 +127,9 @@ Important variables:
   - `IDEMPOTENCY_ENABLED`, `IDEMPOTENCY_HEADER`, `IDEMPOTENCY_TTL_MS`
   - `SUPPRESSION_ENABLED`, `SUPPRESSION_APPLIES_TO`
   - `PUBLIC_BASE_URL`, `UNSUBSCRIBE_SECRET`
+  - `BOUNCE_WEBHOOK_ENABLED`, `BOUNCE_WEBHOOK_TOKEN`, `BOUNCE_DOMAIN`
+  - `DELIVERY_POLICY_ENABLED`, `DOMAIN_POLICIES_JSON`, `SMTP_ACCOUNT_POLICIES_JSON`
+  - `DKIM_SIGNING_ENABLED`, `DKIM_DOMAIN`, `DKIM_SELECTOR`, `DKIM_PRIVATE_KEY_PATH`
   - `DOMAIN_HEALTH_DKIM_SELECTORS`
 
 ## Run

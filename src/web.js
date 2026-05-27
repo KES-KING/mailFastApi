@@ -84,7 +84,7 @@ app.get("/health", async (req, res) => {
 
 app.get("/setup", (req, res) => {
   if (secureStore.hasAdminPassword()) {
-    return res.redirect(302, "/login");
+    return res.redirect(302, secureStore.hasAdminTotp() ? "/login" : "/mfa/setup");
   }
   const formToken = webAuth.createFormToken(req, res);
   return res.status(200).type("html").send(
@@ -100,7 +100,7 @@ app.get("/setup", (req, res) => {
 
 app.post("/setup", (req, res) => {
   if (secureStore.hasAdminPassword()) {
-    return res.redirect(302, "/login");
+    return res.redirect(302, secureStore.hasAdminTotp() ? "/login" : "/mfa/setup");
   }
   if (!webAuth.verifyFormToken(req, req.body || {})) {
     return res.redirect(302, "/setup?error=Invalid%20form%20token");
@@ -114,10 +114,72 @@ app.post("/setup", (req, res) => {
 
   try {
     secureStore.setAdminPassword(password);
-    webAuth.login(req, res, password);
-    return res.redirect(302, "/smtp");
+    const enrollment = secureStore.beginAdminTotpEnrollment();
+    const formToken = webAuth.createFormToken(req, res);
+    return res.status(200).type("html").send(
+      renderMfaSetupPageHtml({
+        enrollment,
+        formToken,
+        status: "Password created. Enroll MFA before opening the panel.",
+        cspNonce: getCspNonce(res),
+      }),
+    );
   } catch (error) {
     return res.redirect(302, `/setup?error=${encodeURIComponent(getErrorMessage(error))}`);
+  }
+});
+
+app.get("/mfa/setup", (req, res) => {
+  if (!secureStore.hasAdminPassword()) {
+    return res.redirect(302, "/setup");
+  }
+  if (secureStore.hasAdminTotp()) {
+    return res.redirect(302, "/login");
+  }
+
+  const enrollment =
+    secureStore.getPendingAdminTotpEnrollment() || secureStore.beginAdminTotpEnrollment();
+  const formToken = webAuth.createFormToken(req, res);
+  return res.status(200).type("html").send(
+    renderMfaSetupPageHtml({
+      enrollment,
+      formToken,
+      status: req.query && req.query.status ? String(req.query.status) : "",
+      error: req.query && req.query.error ? String(req.query.error) : "",
+      cspNonce: getCspNonce(res),
+    }),
+  );
+});
+
+app.post("/mfa/setup", (req, res) => {
+  if (!secureStore.hasAdminPassword()) {
+    return res.redirect(302, "/setup");
+  }
+  if (secureStore.hasAdminTotp()) {
+    return res.redirect(302, "/login");
+  }
+  if (!webAuth.verifyFormToken(req, req.body || {})) {
+    return res.redirect(302, "/mfa/setup?error=Invalid%20form%20token");
+  }
+
+  const password = req.body && typeof req.body.password === "string" ? req.body.password : "";
+  const code = req.body && typeof req.body.mfaCode === "string" ? req.body.mfaCode : "";
+
+  if (!secureStore.verifyAdminPassword(password)) {
+    return res.redirect(302, "/mfa/setup?error=Invalid%20password");
+  }
+
+  try {
+    const result = secureStore.confirmAdminTotpEnrollment(code);
+    webAuth.login(req, res, password, code);
+    return res.status(200).type("html").send(
+      renderMfaRecoveryCodesPageHtml({
+        recoveryCodes: result.recoveryCodes,
+        cspNonce: getCspNonce(res),
+      }),
+    );
+  } catch (error) {
+    return res.redirect(302, `/mfa/setup?error=${encodeURIComponent(getErrorMessage(error))}`);
   }
 });
 
@@ -125,12 +187,16 @@ app.get("/login", (req, res) => {
   if (!secureStore.hasAdminPassword()) {
     return res.redirect(302, "/setup");
   }
+  if (!secureStore.hasAdminTotp()) {
+    return res.redirect(302, "/mfa/setup");
+  }
   const formToken = webAuth.createFormToken(req, res);
   return res.status(200).type("html").send(
     renderAuthPageHtml({
       mode: "login",
       action: "/login",
       formToken,
+      mfaRequired: true,
       error: req.query && req.query.error ? String(req.query.error) : "",
       cspNonce: getCspNonce(res),
     }),
@@ -141,13 +207,17 @@ app.post("/login", (req, res) => {
   if (!secureStore.hasAdminPassword()) {
     return res.redirect(302, "/setup");
   }
+  if (!secureStore.hasAdminTotp()) {
+    return res.redirect(302, "/mfa/setup");
+  }
   if (!webAuth.verifyFormToken(req, req.body || {})) {
     return res.redirect(302, "/login?error=Invalid%20form%20token");
   }
   const password = req.body && typeof req.body.password === "string" ? req.body.password : "";
+  const mfaCode = req.body && typeof req.body.mfaCode === "string" ? req.body.mfaCode : "";
 
   try {
-    webAuth.login(req, res, password);
+    webAuth.login(req, res, password, mfaCode);
     return res.redirect(302, "/");
   } catch (error) {
     return res.redirect(302, `/login?error=${encodeURIComponent(getErrorMessage(error))}`);
@@ -159,7 +229,12 @@ app.post("/logout", webAuth.requireAuth, webAuth.requireCsrf, (req, res) => {
   res.redirect(302, "/login");
 });
 
-app.get(MONITOR_LOGO_ASSET_PATH, webAuth.requireAuth, (req, res, next) => {
+app.post("/sessions/revoke", webAuth.requireAuth, webAuth.requireRole("admin"), webAuth.requireCsrf, (req, res) => {
+  const revoked = webAuth.revokeAllSessions();
+  res.status(200).json({ ok: true, revoked });
+});
+
+app.get(MONITOR_LOGO_ASSET_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer", "smtp-manager"), (req, res, next) => {
   res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
   res.sendFile(LOGO_FILE_PATH, (error) => {
     if (!error) {
@@ -173,11 +248,11 @@ app.get("/favicon.ico", (req, res) => {
   res.status(204).end();
 });
 
-app.get("/monitor", webAuth.requireAuth, (req, res) => {
+app.get("/monitor", webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer", "smtp-manager"), (req, res) => {
   res.redirect(302, "/");
 });
 
-app.get(MONITOR_PATH, webAuth.requireAuth, (req, res) => {
+app.get(MONITOR_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer", "smtp-manager"), (req, res) => {
   const tokenSuffix = "";
   const html = renderMonitorPageHtml({
     title: "mailFastApi Live Monitor",
@@ -200,7 +275,7 @@ app.get(MONITOR_PATH, webAuth.requireAuth, (req, res) => {
   res.status(200).type("html").send(html);
 });
 
-app.get("/smtp", webAuth.requireAuth, (req, res) => {
+app.get("/smtp", webAuth.requireAuth, webAuth.requireRole("admin", "smtp-manager"), (req, res) => {
   const status = req.query && req.query.status ? String(req.query.status) : "";
   const error = req.query && req.query.error ? String(req.query.error) : "";
   res.status(200).type("html").send(
@@ -214,7 +289,7 @@ app.get("/smtp", webAuth.requireAuth, (req, res) => {
   );
 });
 
-app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, (req, res) => {
+app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, webAuth.requireRole("admin"), (req, res) => {
   res.status(200).type("html").send(
     renderUpdatePageHtml({
       csrfToken: webAuth.getCsrfToken(req),
@@ -229,7 +304,7 @@ app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, (req, res) => {
   );
 });
 
-app.post("/smtp/accounts", webAuth.requireAuth, webAuth.requireCsrf, (req, res) => {
+app.post("/smtp/accounts", webAuth.requireAuth, webAuth.requireRole("admin", "smtp-manager"), webAuth.requireCsrf, (req, res) => {
   try {
     secureStore.upsertSmtpAccount(parseSmtpAccountForm(req.body || {}));
     res.redirect(302, "/smtp?status=saved");
@@ -238,7 +313,7 @@ app.post("/smtp/accounts", webAuth.requireAuth, webAuth.requireCsrf, (req, res) 
   }
 });
 
-app.post("/smtp/accounts/delete", webAuth.requireAuth, webAuth.requireCsrf, (req, res) => {
+app.post("/smtp/accounts/delete", webAuth.requireAuth, webAuth.requireRole("admin", "smtp-manager"), webAuth.requireCsrf, (req, res) => {
   try {
     secureStore.deleteSmtpAccount(req.body && req.body.name);
     res.redirect(302, "/smtp?status=deleted");
@@ -247,7 +322,7 @@ app.post("/smtp/accounts/delete", webAuth.requireAuth, webAuth.requireCsrf, (req
   }
 });
 
-app.post("/smtp/default", webAuth.requireAuth, webAuth.requireCsrf, (req, res) => {
+app.post("/smtp/default", webAuth.requireAuth, webAuth.requireRole("admin", "smtp-manager"), webAuth.requireCsrf, (req, res) => {
   try {
     secureStore.setDefaultSmtpAccountName(req.body && req.body.name);
     res.redirect(302, "/smtp?status=default-updated");
@@ -256,7 +331,7 @@ app.post("/smtp/default", webAuth.requireAuth, webAuth.requireCsrf, (req, res) =
   }
 });
 
-app.get(MONITOR_METRICS_VIEW_PATH, webAuth.requireAuth, (req, res) => {
+app.get(MONITOR_METRICS_VIEW_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer"), (req, res) => {
   const tokenSuffix = "";
   const html = renderMonitorMetricsPageHtml({
     title: "mailFastApi Prometheus Metrics View",
@@ -268,7 +343,7 @@ app.get(MONITOR_METRICS_VIEW_PATH, webAuth.requireAuth, (req, res) => {
   res.status(200).type("html").send(html);
 });
 
-app.get(MONITOR_RAW_VIEW_PATH, webAuth.requireAuth, (req, res) => {
+app.get(MONITOR_RAW_VIEW_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer"), (req, res) => {
   const tokenSuffix = "";
   const html = renderMonitorRawPageHtml({
     title: "mailFastApi Raw Snapshot View",
@@ -280,7 +355,7 @@ app.get(MONITOR_RAW_VIEW_PATH, webAuth.requireAuth, (req, res) => {
   res.status(200).type("html").send(html);
 });
 
-app.get(MONITOR_STATS_PATH, webAuth.requireAuth, async (req, res, next) => {
+app.get(MONITOR_STATS_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer"), async (req, res, next) => {
   try {
     const response = await fetch(buildCoreUrl(req, CORE_MONITOR_STATS_PATH), {
       headers: buildCoreHeaders(req),
@@ -292,7 +367,7 @@ app.get(MONITOR_STATS_PATH, webAuth.requireAuth, async (req, res, next) => {
   }
 });
 
-app.get(METRICS_PATH, webAuth.requireAuth, async (req, res, next) => {
+app.get(METRICS_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer"), async (req, res, next) => {
   try {
     const response = await fetch(buildCoreUrl(req, METRICS_PATH), {
       headers: buildCoreHeaders(req),
@@ -304,7 +379,7 @@ app.get(METRICS_PATH, webAuth.requireAuth, async (req, res, next) => {
   }
 });
 
-app.get(MONITOR_STREAM_PATH, webAuth.requireAuth, async (req, res, next) => {
+app.get(MONITOR_STREAM_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer"), async (req, res, next) => {
   const controller = new AbortController();
   req.on("close", () => {
     controller.abort();
@@ -361,7 +436,7 @@ app.get(MONITOR_STREAM_PATH, webAuth.requireAuth, async (req, res, next) => {
   }
 });
 
-app.get(MONITOR_UPDATE_CHECK_PATH, webAuth.requireAuth, updateAuth, async (req, res, next) => {
+app.get(MONITOR_UPDATE_CHECK_PATH, webAuth.requireAuth, webAuth.requireRole("admin"), updateAuth, async (req, res, next) => {
   if (!WEB_ENABLE_UPDATER) {
     return res.status(403).json({
       ok: false,
@@ -390,6 +465,7 @@ app.get(MONITOR_UPDATE_CHECK_PATH, webAuth.requireAuth, updateAuth, async (req, 
 app.post(
   MONITOR_UPDATE_START_PATH,
   webAuth.requireAuth,
+  webAuth.requireRole("admin"),
   webAuth.requireCsrf,
   updateAuth,
   (req, res, next) => {
@@ -419,13 +495,14 @@ app.post(
   },
 );
 
-app.get(MONITOR_UPDATE_STATUS_PATH, webAuth.requireAuth, updateAuth, (req, res) => {
+app.get(MONITOR_UPDATE_STATUS_PATH, webAuth.requireAuth, webAuth.requireRole("admin"), updateAuth, (req, res) => {
   res.status(200).json(getUpdateJobSnapshot());
 });
 
 app.post(
   MONITOR_UPDATE_APPLY_PATH,
   webAuth.requireAuth,
+  webAuth.requireRole("admin"),
   webAuth.requireCsrf,
   updateAuth,
   async (req, res, next) => {
@@ -533,6 +610,7 @@ function renderAuthPageHtml(options = {}) {
   const action = escapeHtml(options.action || (isSetup ? "/setup" : "/login"));
   const formToken = escapeHtml(options.formToken || "");
   const error = String(options.error || "").trim();
+  const mfaRequired = options.mfaRequired === true;
   const nonceAttr = formatNonceAttr(options.cspNonce);
 
   return `<!doctype html>
@@ -595,7 +673,7 @@ function renderAuthPageHtml(options = {}) {
 <body>
   <main>
     <h1>${escapeHtml(title)}</h1>
-    <p>${isSetup ? "First secure setup. Create the web panel password." : "Enter the web panel password."}</p>
+    <p>${isSetup ? "First secure setup. Create the web panel password." : "Enter the web panel password and MFA code."}</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <form method="post" action="${action}" autocomplete="off">
       <input type="hidden" name="_csrf" value="${formToken}" />
@@ -606,8 +684,180 @@ function renderAuthPageHtml(options = {}) {
           ? '<label for="confirm">Confirm Password</label><input id="confirm" name="confirm" type="password" minlength="12" required />'
           : ""
       }
+      ${
+        mfaRequired
+          ? '<label for="mfaCode">MFA code</label><input id="mfaCode" name="mfaCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9A-Za-z -]{6,24}" required />'
+          : ""
+      }
       <button type="submit">${escapeHtml(submitText)}</button>
     </form>
+  </main>
+</body>
+</html>`;
+}
+
+function renderMfaSetupPageHtml(options = {}) {
+  const enrollment = options.enrollment || {};
+  const formToken = escapeHtml(options.formToken || "");
+  const secret = escapeHtml(enrollment.secret || "");
+  const otpauthUrl = escapeHtml(enrollment.otpauthUrl || "");
+  const error = String(options.error || "").trim();
+  const status = String(options.status || "").trim();
+  const nonceAttr = formatNonceAttr(options.cspNonce);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Enroll MFA</title>
+  <style${nonceAttr}>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      background: #dedede;
+      color: #1c1c1c;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+    main {
+      width: min(620px, 100%);
+      border: 1px solid #c6cbd3;
+      background: #efefef;
+      border-radius: 4px;
+      padding: 18px;
+    }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p { margin: 0 0 14px; color: #444; font-size: 13px; line-height: 1.45; }
+    label { display: block; font-weight: 700; font-size: 12px; margin: 12px 0 6px; }
+    input, textarea {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid #888;
+      background: #fff;
+      color: #111;
+      padding: 8px 10px;
+      font-size: 14px;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    textarea { min-height: 82px; resize: vertical; }
+    code {
+      display: block;
+      border: 1px solid #888;
+      background: #fff;
+      padding: 8px 10px;
+      overflow-wrap: anywhere;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+    button {
+      width: 100%;
+      min-height: 38px;
+      margin-top: 16px;
+      border: 1px solid #888;
+      background: #111827;
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .error, .status {
+      border: 1px solid #888;
+      background: #fff;
+      padding: 8px 10px;
+      margin-bottom: 12px;
+      font-size: 12px;
+    }
+    .error { border-color: #e24d42; background: #fff5f5; color: #991b1b; }
+    .status { border-color: #1f7a43; background: #f0fff5; color: #14532d; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Enroll MFA</h1>
+    <p>Add this TOTP secret to an authenticator app, then confirm with the current six digit code.</p>
+    ${status ? `<div class="status">${escapeHtml(status)}</div>` : ""}
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+    <label>TOTP secret</label>
+    <code>${secret}</code>
+    <label for="otpauthUrl">Authenticator URI</label>
+    <textarea id="otpauthUrl" readonly>${otpauthUrl}</textarea>
+    <form method="post" action="/mfa/setup" autocomplete="off">
+      <input type="hidden" name="_csrf" value="${formToken}" />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" minlength="12" required />
+      <label for="mfaCode">MFA code</label>
+      <input id="mfaCode" name="mfaCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required autofocus />
+      <button type="submit">Enable MFA</button>
+    </form>
+  </main>
+</body>
+</html>`;
+}
+
+function renderMfaRecoveryCodesPageHtml(options = {}) {
+  const recoveryCodes = Array.isArray(options.recoveryCodes) ? options.recoveryCodes : [];
+  const nonceAttr = formatNonceAttr(options.cspNonce);
+  const listItems = recoveryCodes
+    .map((code) => `<li><code>${escapeHtml(code)}</code></li>`)
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MFA Recovery Codes</title>
+  <style${nonceAttr}>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      background: #dedede;
+      color: #1c1c1c;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+    }
+    main {
+      width: min(520px, 100%);
+      border: 1px solid #c6cbd3;
+      background: #efefef;
+      border-radius: 4px;
+      padding: 18px;
+    }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p { margin: 0 0 14px; color: #444; font-size: 13px; line-height: 1.45; }
+    ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+    code {
+      display: block;
+      border: 1px solid #888;
+      background: #fff;
+      padding: 8px 10px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 14px;
+    }
+    a {
+      display: inline-block;
+      margin-top: 16px;
+      border: 1px solid #888;
+      background: #111827;
+      color: #fff;
+      padding: 10px 14px;
+      text-decoration: none;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>MFA enabled</h1>
+    <p>Store these recovery codes in a secure offline location. Each code can be used once.</p>
+    <ul>${listItems}</ul>
+    <a href="/">Continue</a>
   </main>
 </body>
 </html>`;

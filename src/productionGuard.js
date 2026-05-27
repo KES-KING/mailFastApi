@@ -1,5 +1,9 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
+const { validateDkimProductionConfig } = require("./dkimConfig");
+
 const DEFAULT_SECURE_STORE_KEY = "change_me_with_at_least_32_random_characters";
 
 function validateProductionSafety(env = process.env) {
@@ -15,6 +19,8 @@ function validateProductionSafety(env = process.env) {
   const queueBackend = clean(env.QUEUE_BACKEND || "redis").toLowerCase();
   const serviceRole = clean(env.MAILFASTAPI_ROLE || "all").toLowerCase();
   const webUpdaterEnabled = toBoolean(env.WEB_ENABLE_UPDATER, true);
+  const webhookEnabled = toBoolean(env.BOUNCE_WEBHOOK_ENABLED, true);
+  const webMfaRequired = toBoolean(env.WEB_MFA_REQUIRED, true);
 
   if (authMode === "none") {
     errors.push("AUTH_MODE=none is forbidden in production.");
@@ -28,6 +34,16 @@ function validateProductionSafety(env = process.env) {
   if (toBoolean(env.MONITOR_ENABLED, true) && !clean(env.MONITOR_TOKEN)) {
     errors.push("MONITOR_TOKEN is required when MONITOR_ENABLED=true in production.");
   }
+  if (!webMfaRequired) {
+    errors.push("WEB_MFA_REQUIRED=false is forbidden in production.");
+  }
+  if (webhookEnabled) {
+    requireSecret(errors, "BOUNCE_WEBHOOK_TOKEN", env.BOUNCE_WEBHOOK_TOKEN);
+  }
+  if (!isValidDomain(env.BOUNCE_DOMAIN)) {
+    errors.push("BOUNCE_DOMAIN is required in production for dedicated Return-Path handling.");
+  }
+  errors.push(...validateDkimProductionConfig(env));
   if (webUpdaterEnabled) {
     if (clean(env.UPDATER_RELEASE_MODE || "branch").toLowerCase() !== "tag") {
       errors.push("UPDATER_RELEASE_MODE=tag is required for production web updater.");
@@ -37,7 +53,7 @@ function validateProductionSafety(env = process.env) {
     }
   }
 
-  requireSecret(errors, "SECURE_STORE_KEY", env.SECURE_STORE_KEY, [DEFAULT_SECURE_STORE_KEY]);
+  requireSecret(errors, "SECURE_STORE_KEY", resolveSecureStoreKey(env), [DEFAULT_SECURE_STORE_KEY]);
   if (authMode === "jwt") {
     requireSecret(errors, "JWT_SECRET", env.JWT_SECRET);
     if (!clean(env.AUTH_CLIENT_SECRET) && !clean(env.JWT_CLIENTS_JSON)) {
@@ -81,6 +97,17 @@ function requireSecret(errors, name, value, forbidden = []) {
   }
 }
 
+function resolveSecureStoreKey(env) {
+  if (clean(env.SECURE_STORE_KEY_FILE)) {
+    try {
+      return fs.readFileSync(path.resolve(clean(env.SECURE_STORE_KEY_FILE)), "utf8").trim();
+    } catch (error) {
+      return "";
+    }
+  }
+  return env.SECURE_STORE_KEY;
+}
+
 function toBoolean(value, fallback) {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -93,6 +120,13 @@ function toBoolean(value, fallback) {
 
 function clean(value) {
   return String(value || "").trim();
+}
+
+function isValidDomain(value) {
+  const domain = clean(value).toLowerCase().replace(/\.$/, "");
+  return /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(
+    domain,
+  );
 }
 
 module.exports = {

@@ -47,13 +47,20 @@ Encrypted SQLite vault
 | Visibility timeout | Expired processing jobs are requeued | Redis processing list + lease sorted set |
 | At-least-once delivery | Jobs are acked only after terminal worker state | `queue.ack()` from worker |
 | Idempotency | Client retries do not duplicate queue writes | Operational SQLite idempotency records |
+| Lifecycle | Job state machine records queue and terminal states | `job_lifecycle_events` |
+| Domain policy | Gmail/Outlook/Yahoo/corporate quota buckets | `src/deliveryPolicy.js` |
+| Bounce classifier | Hard/soft/greylist/complaint classification | `src/bounceClassifier.js` |
 | DLQ | Final worker failures are persisted | `dead_letter_jobs` |
 | Suppression | Global and tenant recipient suppression | `suppression_entries` |
+| Complaint ingestion | Feedback-loop webhook suppresses recipients | `POST /webhooks/complaint` |
 | One-click unsubscribe | RFC style unsubscribe headers | `List-Unsubscribe`, `List-Unsubscribe-Post` |
 | Audit | Hash-chained append-only event records | `audit_events` |
+| RBAC | Web role middleware for admin/operator/viewer/smtp-manager | `src/webAuth.js` |
+| TOTP MFA | First-run local MFA enrollment and login verification | `src/totp.js`, `src/secureStore.js`, `src/web.js` |
 | CSP | Web panel uses per-response nonce CSP | `src/webAuth.js` |
-| Domain health | SPF, DKIM, DMARC DNS checks | `/domain-health/:domain` monitor endpoint |
-| Observability | Queue depth, processing depth, active jobs | `/health`, `/metrics`, monitor snapshot |
+| DKIM signing | Nodemailer DKIM options from env/file config | `src/dkimConfig.js` |
+| Domain health | SPF, DKIM, DMARC, MX, MTA-STS, TLS-RPT DNS checks | `/domain-health/:domain` |
+| Observability | Queue, processing, delivery events, active jobs | `/health`, `/metrics`, monitor snapshot |
 
 ## Critical External Controls
 
@@ -61,12 +68,12 @@ These are mandatory for a real enterprise deployment but cannot be completed by 
 
 | Control | Required production dependency |
 |---|---|
-| TOTP/WebAuthn MFA | Identity provider or web panel MFA enrollment flow |
+| WebAuthn/federated MFA | External identity provider or WebAuthn/FIDO2 enrollment if phishing-resistant MFA is required |
 | Admin public access ban | VPN, private subnet, reverse proxy IP allowlist, or zero-trust gateway |
-| KMS/Vault secret source | Cloud KMS, HashiCorp Vault, or OS secret store |
-| DKIM signing keys | DNS ownership and key rotation workflow |
+| KMS/Vault secret source | Cloud KMS, HashiCorp Vault, or OS secret store integration beyond file-based secret source |
+| DKIM DNS publication | DNS ownership and key rotation operations |
 | DMARC enforcement | Domain DNS policy change to `p=quarantine` then `p=reject` |
-| Complaint/FBL ingestion | Provider feedback-loop subscriptions and inbound parser endpoint |
+| Complaint/FBL subscription | Provider feedback-loop enrollment and provider-specific payload mapping |
 | Blacklist monitoring | External DNSBL/seed-list provider integration |
 | Full distributed tracing | OpenTelemetry collector and backend |
 | Release signing | Signed git tags/releases and trusted public keys on hosts |
@@ -120,9 +127,10 @@ Worker lifecycle:
 2. Worker moves one job to processing with blocking pop/push.
 3. Worker creates or refreshes the processing lease.
 4. Worker sends mail and retries locally when needed.
-5. Worker writes DLQ after final failure or logs success.
-6. Worker acknowledges terminal job, removing processing and lease entries.
-7. Reclaimer moves expired processing jobs back to pending.
+5. Worker records `retrying`, `deferred`, `delivered`, `bounced`, `failed`, and `dead-lettered`.
+6. Worker writes DLQ after final failure or logs success.
+7. Worker acknowledges terminal job, removing processing and lease entries.
+8. Reclaimer moves expired processing jobs back to pending.
 
 Durability note: this gives at-least-once delivery. A crash after SMTP provider accepted a message
 but before queue ack can still produce a duplicate. Production SMTP provider selection should use
@@ -133,9 +141,11 @@ provider-side custom message metadata or an outbox ledger if exactly-once busine
 - Retry attempts are controlled by `RETRY_ATTEMPTS`.
 - Base delay is `RETRY_DELAY_MS`.
 - Worker uses exponential backoff plus jitter.
+- Greylisting is classified and gets a longer deferred retry delay.
+- Domain policies can reduce max attempts by recipient domain.
 - Final failure writes DLQ with full job JSON and failure reason.
-- Domain-specific limits, greylisting classification, and provider adaptive throttle policies are
-  architecture requirements for the next production infrastructure pass.
+- Domain/account quotas are enforced from operational delivery events. For multi-node deployments,
+  use shared operational storage or move the counter backend to Redis/OLAP before declaring global quotas.
 
 ## Security Architecture
 
@@ -145,7 +155,7 @@ Baseline controls:
 - Production fail-fast guard.
 - Rate limiting on API and token endpoints.
 - Secure web-panel password store in encrypted SQLite.
-- CSRF protection and session cookies in the legacy web panel.
+- CSRF protection, local TOTP MFA, idle timeout, absolute timeout, session revoke, IP-bound cookies, and RBAC middleware.
 - Nonce-based CSP for web-panel inline scripts/styles; no `unsafe-inline` fallback.
 - Monitor token requirement in production.
 - Hash-chained audit events for critical operational state.
@@ -155,7 +165,7 @@ Production deployment controls:
 - Place admin panel behind VPN, private network, IP allowlist, or zero-trust gateway.
 - Terminate TLS at a reverse proxy with HSTS.
 - Use CSP nonce/hash policy on web panel pages before public exposure.
-- Enforce MFA at identity layer or implement local TOTP/WebAuthn enrollment before production.
+- Local TOTP MFA is enforced for web-panel login; use an identity provider or WebAuthn/FIDO2 for phishing-resistant deployments.
 - Keep update endpoints disabled or restricted to approved operators.
 
 ## Secret Management Architecture
@@ -164,11 +174,11 @@ Current repository behavior:
 
 - SMTP account values are stored in encrypted SQLite, not `.env`.
 - `.env` contains only high-level runtime configuration and encryption/auth secrets.
-- `SECURE_STORE_KEY` protects the encrypted vault.
+- `SECURE_STORE_KEY` or `SECURE_STORE_KEY_FILE` protects the encrypted vault.
 
 Production target:
 
-- Load `SECURE_STORE_KEY` from KMS, Vault, or OS secret store.
+- Prefer `SECURE_STORE_KEY_FILE` or a platform secret mount over plain `.env`; KMS/Vault agents can write this file.
 - Rotate the secure store key through an online re-encryption flow.
 - Never log raw SMTP passwords, tokens, private keys, or updater credentials.
 - Keep `.env` out of source control and restrict filesystem permissions.
@@ -180,17 +190,17 @@ Implemented:
 - `category` field: `transactional`, `security`, `notification`, `marketing`, `bulk`.
 - Suppression applies to `marketing,bulk` by default.
 - One-click unsubscribe links can be generated when `PUBLIC_BASE_URL` and `UNSUBSCRIBE_SECRET` are set.
-- Monitor endpoint checks SPF, DKIM selector TXT records, and DMARC policy.
+- Bounce/complaint webhooks ingest provider events and update suppression.
+- DKIM signing can be enabled with `DKIM_SIGNING_ENABLED=true`.
+- Dedicated Return-Path is generated when `BOUNCE_DOMAIN` is set.
+- Monitor endpoint checks SPF, DKIM selector TXT records, DMARC policy, MX, MTA-STS, and TLS-RPT.
 
 Mandatory production controls:
 
-- Domain verification workflow before first send.
-- DKIM signing and key rotation.
-- Return-Path/bounce domain separation.
+- DNS records must still be published by domain owner before verification can pass.
 - DMARC minimum `quarantine`; mature domains should move to `reject`.
-- Provider feedback-loop ingestion for complaints.
-- Bounce parser and classifier for hard/soft bounce state.
-- Warm-up scheduler and per-domain throttling policy.
+- Provider FBL subscriptions must be configured so complaint webhooks receive real traffic.
+- Warm-up profiles are configured through `DOMAIN_POLICIES_JSON`/`SMTP_ACCOUNT_POLICIES_JSON`; production warm-up dashboards still need real provider data.
 
 ## Monitoring Architecture
 
@@ -203,6 +213,7 @@ Current metrics:
 - `mailfastapi_mail_sent_total`
 - `mailfastapi_mail_failed_total`
 - `mailfastapi_mail_retry_total`
+- `mailfastapi_delivery_events_1h_total{event="..."}`
 - log level counters and auth token counters
 
 Production stack:
@@ -407,20 +418,20 @@ Next scaling action:
 | OWASP ASVS L2 auth/session | JWT/API-key auth, web sessions, CSRF, rate limiting |
 | OWASP ASVS L2 secrets | Encrypted SMTP vault, no SMTP credentials in `.env` |
 | OWASP API Security Top 10 | Auth, rate limits, payload validation, production guard |
-| NIST SP 800-63B | Requires production MFA integration before critical deployment |
+| NIST SP 800-63B | Local TOTP MFA implemented; WebAuthn/FIDO2 or IdP MFA recommended for AAL3/phishing resistance |
 | NIST SSDF SP 800-218 | Signed update model, tests, rollback, supply-chain gate plan |
 | OWASP Secrets Management | Secret minimization and external secret-manager target |
-| Google/Yahoo bulk sender | Unsubscribe, suppression, domain health diagnostics |
+| Google/Yahoo bulk sender | Unsubscribe, suppression, complaint ingestion, DKIM config, domain health diagnostics |
 
 ## Phase Status
 
 | Phase | Status |
 |---|---|
 | Queue and distributed delivery | Core implemented; provider-specific exactly-once remains external/business dependent |
-| Rate limiting and reputation | Basic API rate limit exists; adaptive throttling/warm-up requires provider telemetry |
-| Bounce/suppression/complaint | Suppression and unsubscribe implemented; bounce/FBL ingestion remains external |
-| Security hardening | Production guard, audit, CSRF, secure store exist; MFA/RBAC hardening remains required |
-| Mail auth/deliverability | Domain health and unsubscribe implemented; DKIM signing/DNS workflow remains required |
+| Rate limiting and reputation | API limits plus domain/account policy counters implemented; provider reputation telemetry remains external |
+| Bounce/suppression/complaint | Classifier, hard-bounce suppression, complaint webhook, global/tenant suppression implemented |
+| Security hardening | Production guard, audit, CSRF, secure store, local TOTP MFA, RBAC middleware, session revoke, nonce CSP implemented; WebAuthn/IdP MFA remains external |
+| Mail auth/deliverability | SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT checks, DKIM signing config, Return-Path separation implemented; DNS publication remains external |
 | Observability/operations | Metrics and monitor exist; tracing/alert stack remains deployment work |
 | Load/stress/chaos | Templates and scenarios defined; production benchmark must run on target infra |
 | Compliance | Mapping defined; ASVS L3 requires external identity/network/secret controls |

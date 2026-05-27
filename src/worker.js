@@ -1,6 +1,8 @@
 "use strict";
 
 const { setTimeout: delay } = require("node:timers/promises");
+const { classifyBounce } = require("./bounceClassifier");
+const { getRecipientDomains } = require("./deliveryPolicy");
 
 function createWorker(options) {
   const {
@@ -14,6 +16,11 @@ function createWorker(options) {
     retryAttempts = 3,
     retryDelayMs = 250,
     deadLetterSink,
+    lifecycleSink,
+    deliveryEventSink,
+    suppressionSink,
+    deliveryPolicy,
+    getDkimOptions,
     logger = defaultLogger,
   } = options;
 
@@ -63,12 +70,38 @@ function createWorker(options) {
 
   async function processJob(job) {
     const jobQueuedLatency = Date.now() - job.queuedAt;
+    recordLifecycle(job, "processing");
+    const maxAttemptsForJob =
+      deliveryPolicy && typeof deliveryPolicy.getMaxRetryAttempts === "function"
+        ? deliveryPolicy.getMaxRetryAttempts(job, maxAttempts)
+        : maxAttempts;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    for (let attempt = 1; attempt <= maxAttemptsForJob; attempt += 1) {
       const sendStart = Date.now();
 
       try {
         await touchJob(job);
+        const permission = checkSendPermission(job);
+        if (!permission.allowed) {
+          const retryAfterMs = Math.min(Math.max(1000, permission.retryAfterMs || 60000), 30000);
+          recordLifecycle(job, "deferred", {
+            reason: permission.reason,
+            domain: permission.domain,
+            retryAfterMs,
+          });
+          recordDeliveryEvent("deferred", job, permission);
+          logger("WARN", "mail deferred", {
+            jobId: job.id,
+            smtpAccount: job.smtpAccount || defaultAccount,
+            to: job.to,
+            reason: permission.reason,
+            domain: permission.domain,
+            retryAfterMs,
+          });
+          await delay(retryAfterMs);
+          attempt -= 1;
+          continue;
+        }
         const smtpAccount = job.smtpAccount || defaultAccount;
         const selectedTransporter =
           typeof getTransporter === "function" ? getTransporter(smtpAccount) : transporter;
@@ -94,6 +127,18 @@ function createWorker(options) {
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
           };
         }
+        if (job.returnPath) {
+          mailOptions.envelope = {
+            from: job.returnPath,
+            to: job.to,
+          };
+        }
+        if (typeof getDkimOptions === "function") {
+          const dkim = getDkimOptions({ ...job, from: mailOptions.from });
+          if (dkim) {
+            mailOptions.dkim = dkim;
+          }
+        }
 
         const attachments = normalizeAttachments(job.attachments);
         if (attachments.length > 0) {
@@ -114,12 +159,29 @@ function createWorker(options) {
           dispatchLatencyMs: Date.now() - sendStart,
         });
 
+        recordLifecycle(job, "delivered", { messageId: info.messageId, attempt });
+        recordDeliveryEvent("sent", job, { messageId: info.messageId, attempt });
         await ackJob(job);
         return;
       } catch (error) {
-        const isLastAttempt = attempt >= maxAttempts;
+        const classification = classifyBounce(error || {});
+        const isHardBounce = classification.type === "hard";
+        const isLastAttempt = attempt >= maxAttemptsForJob || isHardBounce;
 
         if (isLastAttempt) {
+          if (isHardBounce) {
+            suppressRecipients(job, classification);
+            recordLifecycle(job, "bounced", {
+              reason: classification.reason,
+              raw: classification.raw,
+              attempt,
+            });
+            recordDeliveryEvent("bounced", job, {
+              reason: classification.reason,
+              raw: classification.raw,
+              attempt,
+            });
+          }
           if (typeof deadLetterSink === "function") {
             try {
               await Promise.resolve(deadLetterSink(job, error));
@@ -136,19 +198,44 @@ function createWorker(options) {
             smtpAccount: job.smtpAccount || defaultAccount,
             to: job.to,
             attempt,
+            reason: classification.reason,
             message: error && error.message ? error.message : "Unknown SMTP error",
+          });
+          recordLifecycle(job, "failed", {
+            reason: classification.reason,
+            message: error && error.message ? error.message : "Unknown SMTP error",
+            attempt,
+          });
+          recordLifecycle(job, "dead-lettered", {
+            reason: classification.reason,
+            attempt,
+          });
+          recordDeliveryEvent("failed", job, {
+            reason: classification.reason,
+            attempt,
           });
           await ackJob(job);
           return;
         }
 
-        const nextAttemptInMs = calculateRetryDelay(attempt);
+        const nextAttemptInMs = calculateRetryDelay(attempt, classification, job);
+        recordLifecycle(job, "retrying", {
+          reason: classification.reason,
+          attempt,
+          nextAttemptInMs,
+        });
+        recordDeliveryEvent("retrying", job, {
+          reason: classification.reason,
+          attempt,
+          nextAttemptInMs,
+        });
         logger("WARN", "mail send failed, retrying", {
           jobId: job.id,
           smtpAccount: job.smtpAccount || defaultAccount,
           to: job.to,
           attempt,
           nextAttemptInMs,
+          reason: classification.reason,
           message: error && error.message ? error.message : "Unknown SMTP error",
         });
 
@@ -157,13 +244,53 @@ function createWorker(options) {
     }
   }
 
-  function calculateRetryDelay(attempt) {
+  function calculateRetryDelay(attempt, classification, job) {
     if (baseRetryDelay <= 0) {
       return 0;
+    }
+    if (classification && classification.reason === "greylisted") {
+      const domain = getRecipientDomains(job && job.to)[0] || "";
+      if (deliveryPolicy && typeof deliveryPolicy.getGreylistDelayMs === "function") {
+        return Math.min(deliveryPolicy.getGreylistDelayMs(domain), 30 * 60 * 1000);
+      }
     }
     const exponentialDelay = baseRetryDelay * 2 ** Math.max(0, attempt - 1);
     const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(baseRetryDelay / 2)));
     return exponentialDelay + jitter;
+  }
+
+  function checkSendPermission(job) {
+    if (deliveryPolicy && typeof deliveryPolicy.checkSendPermission === "function") {
+      return deliveryPolicy.checkSendPermission(job);
+    }
+    return { allowed: true };
+  }
+
+  function recordLifecycle(job, state, details = {}) {
+    if (typeof lifecycleSink === "function") {
+      lifecycleSink(job, state, details);
+    }
+  }
+
+  function recordDeliveryEvent(event, job, details = {}) {
+    if (typeof deliveryEventSink === "function") {
+      deliveryEventSink(event, job, details);
+    }
+  }
+
+  function suppressRecipients(job, classification) {
+    if (typeof suppressionSink !== "function") {
+      return;
+    }
+    const recipients = normalizeRecipients(job && job.to).map((item) => item.address);
+    for (const recipient of recipients) {
+      suppressionSink(recipient, {
+        tenantId: job && job.tenantId,
+        reason: classification.reason,
+        source: "smtp",
+        actor: "worker",
+      });
+    }
   }
 
   async function ackJob(job) {
@@ -225,6 +352,14 @@ function createWorker(options) {
     stop,
     getActiveJobs,
   };
+}
+
+function normalizeRecipients(value) {
+  return (Array.isArray(value) ? value : [value])
+    .flatMap((item) => String(item || "").split(","))
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(item))
+    .map((address) => ({ address }));
 }
 
 function defaultLogger(level, message, meta) {

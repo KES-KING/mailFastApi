@@ -76,6 +76,45 @@ describe("worker delivery lifecycle", () => {
     assert.deepEqual(deadLetters, [{ jobId: "job-2", reason: "smtp unavailable" }]);
     assert.deepEqual(acked, ["job-2"]);
   });
+
+  test("suppresses hard bounces without retrying", async () => {
+    const acked = [];
+    const suppressed = [];
+    const lifecycle = [];
+    const queue = createSingleJobQueue(
+      {
+        id: "job-3",
+        tenantId: "tenant_a",
+        to: "missing@example.com",
+        subject: "Hello",
+        html: "<p>Hello</p>",
+        queuedAt: Date.now(),
+      },
+      acked,
+    );
+    const worker = createWorker({
+      queue,
+      transporter: {
+        sendMail: async () => {
+          const error = new Error("550 5.1.1 user unknown");
+          error.responseCode = 550;
+          throw error;
+        },
+      },
+      suppressionSink: (email, options) => suppressed.push({ email, reason: options.reason }),
+      lifecycleSink: (job, state) => lifecycle.push(state),
+      concurrency: 1,
+      retryAttempts: 5,
+      logger: () => {},
+    });
+
+    worker.start();
+    await worker.stop({ drainTimeoutMs: 1000 });
+
+    assert.deepEqual(suppressed, [{ email: "missing@example.com", reason: "hard_bounce" }]);
+    assert.ok(lifecycle.includes("bounced"));
+    assert.deepEqual(acked, ["job-3"]);
+  });
 });
 
 function createSingleJobQueue(job, acked) {

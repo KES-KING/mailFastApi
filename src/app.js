@@ -25,6 +25,9 @@ const { createMailQueue } = require("./mailQueueFactory");
 const { createOperationalStore } = require("./operationalStore");
 const { assertProductionSafety } = require("./productionGuard");
 const { checkDomainHealth, normalizeSelectors } = require("./domainHealth");
+const { classifyBounce } = require("./bounceClassifier");
+const { createDeliveryPolicy } = require("./deliveryPolicy");
+const { createDkimResolver } = require("./dkimConfig");
 const {
   createMonitor,
   renderMonitorPageHtml,
@@ -116,6 +119,9 @@ const IDEMPOTENCY_TTL_MS = Math.max(
 );
 const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
 const UNSUBSCRIBE_SECRET = String(process.env.UNSUBSCRIBE_SECRET || process.env.JWT_SECRET || "").trim();
+const BOUNCE_WEBHOOK_ENABLED = toBoolean(process.env.BOUNCE_WEBHOOK_ENABLED, true);
+const BOUNCE_WEBHOOK_TOKEN = String(process.env.BOUNCE_WEBHOOK_TOKEN || "").trim();
+const BOUNCE_DOMAIN = normalizeOptionalDomain(process.env.BOUNCE_DOMAIN || "");
 const DOMAIN_HEALTH_DKIM_SELECTORS = normalizeSelectors(
   process.env.DOMAIN_HEALTH_DKIM_SELECTORS || "default,mail",
 );
@@ -137,6 +143,8 @@ monitorApp.disable("x-powered-by");
 
 const store = createSystemStore({ dbPath: LOG_DB_PATH });
 const operationalStore = createOperationalStore({ dbPath: OPERATIONAL_DB_PATH });
+const deliveryPolicy = createDeliveryPolicy({ env: process.env, store: operationalStore });
+const dkimResolver = createDkimResolver(process.env);
 const logger = createSystemLogger({
   store,
   logDir: LOG_DIR,
@@ -167,6 +175,27 @@ const worker = createWorker({
   concurrency: WORKER_CONCURRENCY,
   retryAttempts: RETRY_ATTEMPTS,
   retryDelayMs: RETRY_DELAY_MS,
+  deliveryPolicy,
+  getDkimOptions: dkimResolver.getDkimOptions,
+  lifecycleSink: (job, state, details) => {
+    operationalStore.recordJobLifecycle(job && job.id, state, {
+      tenantId: job && job.tenantId,
+      details,
+      reason: details && details.reason,
+    });
+  },
+  deliveryEventSink: (event, job, details) => {
+    operationalStore.recordDeliveryEvent(event, {
+      ...(details || {}),
+      tenantId: job && job.tenantId,
+      smtpAccount: job && job.smtpAccount,
+      recipients: job && job.to,
+      jobId: job && job.id,
+    });
+  },
+  suppressionSink: (email, options) => {
+    operationalStore.addSuppression(email, options);
+  },
   deadLetterSink: (job, error) => {
     operationalStore.insertDeadLetterJob(
       job,
@@ -202,10 +231,11 @@ if (authConfig.mode === "jwt") {
         return res.status(401).json({ error: "Invalid client credentials." });
       }
 
-      const tokenResponse = issueAccessToken(authConfig, client.clientId, client.scopes);
+      const tokenResponse = issueAccessToken(authConfig, client.clientId, client.scopes, client.roles);
       logger.info("auth token issued", {
         clientId: client.clientId,
         scope: client.scopes.join(" "),
+        roles: Array.isArray(client.roles) ? client.roles.join(" ") : "",
       });
 
       return res.status(200).json(tokenResponse);
@@ -221,6 +251,16 @@ app.get("/unsubscribe", (req, res) => {
 app.post("/unsubscribe", (req, res) => {
   const result = handleUnsubscribeRequest(req.body || {}, "one-click-post");
   res.status(result.statusCode).json({ ok: result.ok, message: result.message });
+});
+
+app.post("/webhooks/bounce", createWebhookAuthMiddleware(), (req, res) => {
+  const result = handleBounceWebhook(req.body || {});
+  res.status(result.statusCode).json(result.body);
+});
+
+app.post("/webhooks/complaint", createWebhookAuthMiddleware(), (req, res) => {
+  const result = handleComplaintWebhook(req.body || {});
+  res.status(result.statusCode).json(result.body);
 });
 
 app.get("/health", async (req, res, next) => {
@@ -310,6 +350,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
     }
   }
   const unsubscribeUrl = buildUnsubscribeUrl(normalizedPayload, tenantId);
+  const returnPath = buildReturnPath(normalizedPayload, tenantId, jobId);
 
   logger.info(
     "request received",
@@ -341,6 +382,8 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       attachments: normalizedPayload.attachments || undefined,
       category: normalizedPayload.category,
       unsubscribeUrl,
+      returnPath,
+      traceId,
       queuedAt: now,
     });
   } catch (error) {
@@ -394,6 +437,20 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
     tenantId,
     smtpAccount: normalizedPayload.smtpAccount,
     category: normalizedPayload.category,
+  });
+  operationalStore.recordJobLifecycle(jobId, "queued", {
+    tenantId,
+    details: {
+      traceId,
+      smtpAccount: normalizedPayload.smtpAccount,
+      category: normalizedPayload.category,
+    },
+  });
+  operationalStore.recordDeliveryEvent("queued", {
+    tenantId,
+    smtpAccount: normalizedPayload.smtpAccount,
+    recipients,
+    jobId,
   });
 
   return res.status(202).json(responseBody);
@@ -699,6 +756,9 @@ async function collectRuntimeMetrics() {
     authMode: authConfig.mode,
     queueBackend: queue.backend,
     role: MAILFASTAPI_ROLE,
+    deliveryEvents: operationalStore.getDeliveryEventTotals(Date.now() - 60 * 60 * 1000),
+    deliveryPolicy: deliveryPolicy.snapshot(),
+    dkim: dkimResolver.summary(),
     smtpAccounts: getSmtpAccountNames(),
     smtpAccountDetails: getSmtpAccountSummaries(),
     defaultSmtpAccount: getDefaultSmtpAccountName(),
@@ -845,6 +905,14 @@ function validateSendPayload(body) {
     from = body.from.trim();
   }
 
+  let returnPath;
+  if (body.returnPath !== undefined) {
+    if (typeof body.returnPath !== "string" || !isValidEmail(body.returnPath.trim())) {
+      return { error: "`returnPath` must be a valid email address when provided." };
+    }
+    returnPath = body.returnPath.trim().toLowerCase();
+  }
+
   let smtpAccountInput;
   if (body.smtpAccount !== undefined) {
     if (typeof body.smtpAccount !== "string" || body.smtpAccount.trim() === "") {
@@ -889,6 +957,7 @@ function validateSendPayload(body) {
       to: recipients.length === 1 ? recipients[0] : recipients,
       smtpAccount,
       from,
+      returnPath,
       subject: body.subject.trim(),
       html: body.html,
       text,
@@ -951,11 +1020,130 @@ function handleUnsubscribeRequest(input, source) {
   return { ok: true, statusCode: 200, message: "Unsubscribed." };
 }
 
+function createWebhookAuthMiddleware() {
+  return (req, res, next) => {
+    if (!BOUNCE_WEBHOOK_ENABLED) {
+      return res.status(404).json({ error: "Webhook ingestion is disabled." });
+    }
+    if (!BOUNCE_WEBHOOK_TOKEN) {
+      return res.status(503).json({ error: "Webhook token is not configured." });
+    }
+    const provided = req.header("x-webhook-token") || "";
+    if (!provided || !safeEqualStrings(provided, BOUNCE_WEBHOOK_TOKEN)) {
+      return res.status(401).json({ error: "Unauthorized webhook." });
+    }
+    return next();
+  };
+}
+
+function handleBounceWebhook(input) {
+  const email = clean(input.email || input.recipient || input.rcpt).toLowerCase();
+  const tenantId = normalizeTenant(input.tenantId || input.tenant || "global");
+  const classification = classifyBounce({
+    ...input,
+    type: input.type || input.bounceType,
+  });
+
+  if (!isValidEmail(email)) {
+    return { statusCode: 400, body: { ok: false, error: "A valid email is required." } };
+  }
+
+  operationalStore.insertBounceEvent(email, {
+    tenantId,
+    bounceType: classification.type,
+    reason: classification.reason,
+    source: clean(input.source) || "webhook",
+    actor: "bounce-webhook",
+    details: {
+      provider: input.provider,
+      diagnosticCode: input.diagnosticCode,
+      raw: classification.raw,
+    },
+  });
+  operationalStore.recordDeliveryEvent(classification.type === "hard" ? "bounced" : "deferred", {
+    tenantId,
+    smtpAccount: clean(input.smtpAccount) || "unknown",
+    recipients: [email],
+    jobId: input.jobId,
+    reason: classification.reason,
+  });
+  operationalStore.insertAuditEvent("webhook", "bounce.ingested", email, {
+    tenantId,
+    type: classification.type,
+    reason: classification.reason,
+  });
+
+  logger.warn("bounce ingested", {
+    tenantId,
+    email,
+    type: classification.type,
+    reason: classification.reason,
+  });
+
+  return {
+    statusCode: 202,
+    body: {
+      ok: true,
+      type: classification.type,
+      reason: classification.reason,
+      suppressed: classification.suppress,
+    },
+  };
+}
+
+function handleComplaintWebhook(input) {
+  const email = clean(input.email || input.recipient || input.rcpt).toLowerCase();
+  const tenantId = normalizeTenant(input.tenantId || input.tenant || "global");
+
+  if (!isValidEmail(email)) {
+    return { statusCode: 400, body: { ok: false, error: "A valid email is required." } };
+  }
+
+  operationalStore.insertComplaintEvent(email, {
+    tenantId,
+    source: clean(input.source) || "feedback_loop",
+    actor: "complaint-webhook",
+    details: {
+      provider: input.provider,
+      feedbackType: input.feedbackType,
+      jobId: input.jobId,
+    },
+  });
+  operationalStore.recordDeliveryEvent("complaint", {
+    tenantId,
+    smtpAccount: clean(input.smtpAccount) || "unknown",
+    recipients: [email],
+    jobId: input.jobId,
+  });
+  operationalStore.insertAuditEvent("webhook", "complaint.ingested", email, { tenantId });
+  logger.warn("complaint ingested", { tenantId, email });
+
+  return {
+    statusCode: 202,
+    body: {
+      ok: true,
+      suppressed: true,
+    },
+  };
+}
+
 function createUnsubscribeToken(email, tenantId) {
   return crypto
     .createHmac("sha256", UNSUBSCRIBE_SECRET)
     .update(`${normalizeTenant(tenantId)}:${String(email || "").trim().toLowerCase()}`)
     .digest("base64url");
+}
+
+function buildReturnPath(payload, tenantId, jobId) {
+  if (payload.returnPath) {
+    return payload.returnPath;
+  }
+  if (!BOUNCE_DOMAIN) {
+    return "";
+  }
+  const safeTenant = normalizeTenant(tenantId);
+  const safeJobId = String(jobId || "").replace(/[^a-z0-9_-]/gi, "");
+  return `bounces+${safeTenant}-${safeJobId}@${BOUNCE_DOMAIN}`;
 }
 
 function hashRequest(value) {
@@ -1247,6 +1435,18 @@ function normalizePath(value) {
     return prefixed.slice(0, -1);
   }
   return prefixed;
+}
+
+function normalizeOptionalDomain(value) {
+  const domain = clean(value).toLowerCase().replace(/\.$/, "");
+  if (!domain) {
+    return "";
+  }
+  return /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(
+    domain,
+  )
+    ? domain
+    : "";
 }
 
 function safeEqualStrings(left, right) {
