@@ -613,6 +613,7 @@ function registerMonitorRoutes(targetApp) {
         metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${suffix}`,
         rawViewPath: `${MONITOR_RAW_VIEW_PATH}${suffix}`,
         logoPath: `${MONITOR_LOGO_ASSET_PATH}${suffix}`,
+        domainHealthPath: "/domain-health",
         helpUrl: MONITOR_HELP_URL,
       });
       res.status(200).type("html").send(html);

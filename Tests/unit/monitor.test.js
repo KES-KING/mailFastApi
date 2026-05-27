@@ -73,6 +73,20 @@ describe("monitor SMTP account summaries", () => {
     assert.match(html, /id="accountsBody"/);
   });
 
+  test("renders enterprise delivery and domain health controls", () => {
+    const html = renderMonitorPageHtml({
+      domainHealthPath: "/domain-health",
+      webMfaRequired: false,
+    });
+
+    assert.match(html, /Enterprise Controls/);
+    assert.match(html, /id="deliveryEventsBody"/);
+    assert.match(html, /id="policiesBody"/);
+    assert.match(html, /id="domainHealthForm"/);
+    assert.match(html, /const domainHealthPath = "\/domain-health"/);
+    assert.match(html, /const webMfaRequired = false/);
+  });
+
   test("renders stable legacy monitor toolbar layout", () => {
     const html = renderMonitorPageHtml({ updatePagePath: "/update" });
 

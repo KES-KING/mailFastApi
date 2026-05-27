@@ -278,6 +278,7 @@ app.get(MONITOR_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operato
     rawViewPath: `${MONITOR_RAW_VIEW_PATH}${tokenSuffix}`,
     logoPath: `${MONITOR_LOGO_ASSET_PATH}${tokenSuffix}`,
     helpUrl: MONITOR_HELP_URL,
+    domainHealthPath: "/domain-health",
     updatePagePath: `${MONITOR_UPDATE_PAGE_PATH}${tokenSuffix}`,
     updateCheckPath: `${MONITOR_UPDATE_CHECK_PATH}${tokenSuffix}`,
     updateApplyPath: `${MONITOR_UPDATE_APPLY_PATH}${tokenSuffix}`,
@@ -285,6 +286,7 @@ app.get(MONITOR_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operato
     cspNonce: getCspNonce(res),
     logoutPath: "/logout",
     smtpSettingsPath: "/smtp",
+    webMfaRequired: WEB_MFA_REQUIRED,
   });
 
   res.status(200).type("html").send(html);
@@ -393,6 +395,24 @@ app.get(METRICS_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operato
     next(error);
   }
 });
+
+app.get(
+  "/domain-health/:domain",
+  webAuth.requireAuth,
+  webAuth.requireRole("admin", "operator", "viewer"),
+  async (req, res, next) => {
+    try {
+      const domain = encodeURIComponent(String(req.params.domain || ""));
+      const response = await fetch(buildCoreUrl(req, `/domain-health/${domain}`), {
+        headers: buildCoreHeaders(req),
+        cache: "no-store",
+      });
+      await forwardResponse(response, res, "application/json");
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 app.get(MONITOR_STREAM_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operator", "viewer"), async (req, res, next) => {
   const controller = new AbortController();
@@ -899,11 +919,28 @@ function renderSmtpSettingsPageHtml(options = {}) {
         .map(
           (account) => `<tr>
             <td>${escapeHtml(account.name)}${account.isDefault ? " (default)" : ""}</td>
+            <td>${escapeHtml(inferAccountProfile(account))}</td>
             <td>${escapeHtml(account.from || "-")}</td>
             <td>${escapeHtml(account.host || "-")}:${escapeHtml(account.port || "-")}</td>
             <td>${account.secure ? "TLS" : "STARTTLS/plain"}</td>
             <td>${escapeHtml(account.user || "-")}</td>
+            <td>${escapeHtml(formatAccountLimits(account))}</td>
+            <td>${account.hasPassword ? "masked" : "empty"}</td>
             <td>
+              <button
+                type="button"
+                data-edit-account
+                data-name="${escapeHtml(account.name)}"
+                data-from="${escapeHtml(account.from || "")}"
+                data-host="${escapeHtml(account.host || "")}"
+                data-port="${escapeHtml(account.port || "")}"
+                data-secure="${account.secure ? "true" : "false"}"
+                data-user="${escapeHtml(account.user || "")}"
+                data-rate-limit="${escapeHtml(account.rateLimit || "")}"
+                data-max-connections="${escapeHtml(account.maxConnections || "")}"
+                data-max-messages="${escapeHtml(account.maxMessages || "")}"
+                data-rate-delta="${escapeHtml(account.rateDelta || "")}"
+              >Edit</button>
               <form method="post" action="/smtp/default">
                 <input type="hidden" name="_csrf" value="${csrfToken}" />
                 <input type="hidden" name="name" value="${escapeHtml(account.name)}" />
@@ -918,7 +955,8 @@ function renderSmtpSettingsPageHtml(options = {}) {
           </tr>`,
         )
         .join("")
-    : "<tr><td colspan='6' class='empty'>No SMTP accounts saved yet.</td></tr>";
+    : "<tr><td colspan='9' class='empty'>No SMTP accounts saved yet.</td></tr>";
+  const defaultAccount = accounts.find((account) => account.isDefault);
 
   return `<!doctype html>
 <html lang="en">
@@ -945,6 +983,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
     .topbar { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
     h1 { margin: 0; font-size: 20px; }
     h2 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; }
+    p { margin: 0 0 10px; color: #444; font-size: 12px; line-height: 1.45; }
     a, button {
       border: 1px solid #888;
       background: #f4f5f7;
@@ -979,6 +1018,37 @@ function renderSmtpSettingsPageHtml(options = {}) {
       grid-template-columns: repeat(4, minmax(160px, 1fr));
       gap: 10px;
     }
+    .summary-grid, .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .profile-grid { grid-template-columns: repeat(3, minmax(180px, 1fr)); }
+    .summary-card, .profile-card {
+      border: 1px solid #c6cbd3;
+      background: #f7f7f7;
+      padding: 9px;
+      min-height: 72px;
+    }
+    .summary-card .k, .profile-card .k {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #444;
+      margin-bottom: 6px;
+      letter-spacing: 0.35px;
+    }
+    .summary-card .v, .profile-card .v {
+      font-size: 17px;
+      font-weight: 700;
+      color: #111;
+      overflow-wrap: anywhere;
+    }
+    .profile-card .v {
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 600;
+    }
     label { display: block; font-weight: 700; font-size: 12px; margin-bottom: 5px; }
     input, select {
       width: 100%;
@@ -990,7 +1060,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
     }
     .full { grid-column: 1 / -1; }
     .table-wrap { overflow: auto; border: 1px solid #c6cbd3; background: #fff; }
-    table { width: 100%; min-width: 900px; border-collapse: collapse; font-size: 12px; }
+    table { width: 100%; min-width: 1180px; border-collapse: collapse; font-size: 12px; }
     th, td { text-align: left; border-bottom: 1px solid #ddd; padding: 8px; vertical-align: top; }
     th { background: #d9d9d9; text-transform: uppercase; font-size: 11px; }
     td form { display: inline-block; margin-right: 6px; margin-bottom: 4px; }
@@ -998,6 +1068,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
     @media (max-width: 860px) {
       .topbar { align-items: flex-start; flex-direction: column; }
       .form-grid { grid-template-columns: 1fr; }
+      .summary-grid, .profile-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1017,7 +1088,23 @@ function renderSmtpSettingsPageHtml(options = {}) {
   ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
 
   <section class="panel">
+    <h2>Account Overview</h2>
+    <div class="summary-grid">
+      <div class="summary-card"><div class="k">Saved Accounts</div><div class="v">${escapeHtml(accounts.length)}</div></div>
+      <div class="summary-card"><div class="k">Default Account</div><div class="v">${escapeHtml(defaultAccount ? defaultAccount.name : "-")}</div></div>
+      <div class="summary-card"><div class="k">Encrypted Store</div><div class="v">active</div></div>
+      <div class="summary-card"><div class="k">Dev MFA</div><div class="v">${WEB_MFA_REQUIRED ? "enabled" : "disabled"}</div></div>
+    </div>
+    <div class="profile-grid">
+      <div class="profile-card"><div class="k">Security / 2FA</div><div class="v">Use category security and a dedicated sender account.</div></div>
+      <div class="profile-card"><div class="k">Notifications</div><div class="v">Use category notification or transactional for bilgi mailleri.</div></div>
+      <div class="profile-card"><div class="k">Marketing / Bulk</div><div class="v">Use category marketing/bulk so suppression and unsubscribe controls apply.</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
     <h2>Add or Update Account</h2>
+    <p>Saved credentials remain encrypted in the SQLite secure store. Leaving password blank keeps the existing password for the same account.</p>
     <form method="post" action="/smtp/accounts" autocomplete="off">
       <input type="hidden" name="_csrf" value="${csrfToken}" />
       <div class="form-grid">
@@ -1042,7 +1129,17 @@ function renderSmtpSettingsPageHtml(options = {}) {
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Account</th><th>From</th><th>Server</th><th>Secure</th><th>User</th><th>Actions</th></tr>
+          <tr>
+            <th>Account</th>
+            <th>Profile</th>
+            <th>From</th>
+            <th>Server</th>
+            <th>Secure</th>
+            <th>User</th>
+            <th>Limits</th>
+            <th>Password</th>
+            <th>Actions</th>
+          </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
@@ -1055,6 +1152,28 @@ function renderSmtpSettingsPageHtml(options = {}) {
           event.preventDefault();
         }
       });
+    }
+    for (const button of document.querySelectorAll("[data-edit-account]")) {
+      button.addEventListener("click", () => {
+        setValue("name", button.dataset.name);
+        setValue("from", button.dataset.from);
+        setValue("host", button.dataset.host);
+        setValue("port", button.dataset.port);
+        setValue("secure", button.dataset.secure);
+        setValue("user", button.dataset.user);
+        setValue("rateLimit", button.dataset.rateLimit);
+        setValue("maxConnections", button.dataset.maxConnections);
+        setValue("maxMessages", button.dataset.maxMessages);
+        setValue("rateDelta", button.dataset.rateDelta);
+        const pass = document.getElementById("pass");
+        if (pass) pass.value = "";
+        const name = document.getElementById("name");
+        if (name) name.focus();
+      });
+    }
+    function setValue(id, value) {
+      const element = document.getElementById(id);
+      if (element) element.value = value || "";
     }
   </script>
 </body>
@@ -1478,6 +1597,29 @@ function parseSmtpAccountForm(body) {
     rateLimit: body.rateLimit,
     rateDelta: body.rateDelta,
   };
+}
+
+function inferAccountProfile(account = {}) {
+  const haystack = `${account.name || ""} ${account.from || ""}`.toLowerCase();
+  if (/\b(2fa|mfa|otp|security|guvenlik)\b/.test(haystack)) {
+    return "Security / 2FA";
+  }
+  if (/\b(marketing|bulk|campaign|kampanya)\b/.test(haystack)) {
+    return "Marketing / Bulk";
+  }
+  if (/\b(info|bilgi|notification|notify|duyuru)\b/.test(haystack)) {
+    return "Notification";
+  }
+  return "Transactional";
+}
+
+function formatAccountLimits(account = {}) {
+  const parts = [
+    `conn ${account.maxConnections || "-"}`,
+    `msg ${account.maxMessages || "-"}`,
+    `rate ${account.rateLimit || "-"}/${account.rateDelta || "-"}ms`,
+  ];
+  return parts.join(" | ");
 }
 
 function getErrorMessage(error) {

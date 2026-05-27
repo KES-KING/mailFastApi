@@ -57,6 +57,7 @@ function createMonitor(options = {}) {
         activeJobs: numberOrNull(runtime.activeJobs),
         authMode: runtime.authMode || null,
         queueBackend: runtime.queueBackend || null,
+        role: runtime.role || null,
         deliveryEvents:
           runtime.deliveryEvents && typeof runtime.deliveryEvents === "object"
             ? { ...runtime.deliveryEvents }
@@ -415,10 +416,13 @@ function renderMonitorPageHtml(options = {}) {
   const updateCheckPath = escapeHtml(options.updateCheckPath || "/monitor/update/check");
   const updateApplyPath = escapeHtml(options.updateApplyPath || "/monitor/update/apply");
   const updatePagePath = escapeHtml(options.updatePagePath || "/update");
+  const domainHealthPath = escapeHtml(options.domainHealthPath || "/domain-health");
   const csrfToken = escapeHtml(options.csrfToken || "");
   const logoutPath = escapeHtml(options.logoutPath || "/logout");
   const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
   const nonceAttr = formatNonceAttr(options.cspNonce);
+  const webMfaRequired =
+    options.webMfaRequired === true ? "true" : options.webMfaRequired === false ? "false" : "null";
 
   return `<!doctype html>
 <html lang="en">
@@ -721,6 +725,144 @@ function renderMonitorPageHtml(options = {}) {
     .events-panel {
       margin-top: 12px;
     }
+    .ops-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .ops-grid .panel {
+      min-width: 0;
+    }
+    .status-list {
+      display: grid;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .status-line {
+      display: grid;
+      grid-template-columns: minmax(100px, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border-bottom: 1px solid #b8b8b8;
+      padding-bottom: 7px;
+    }
+    .status-line:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+    .status-name {
+      color: var(--muted);
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .status-pill {
+      border: 1px solid #9ca3af;
+      background: #f4f5f7;
+      color: #111;
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .status-pill.ok {
+      border-color: #16a34a;
+      background: #ecfdf3;
+      color: #166534;
+    }
+    .status-pill.warn {
+      border-color: #d97706;
+      background: #fff7ed;
+      color: #92400e;
+    }
+    .status-pill.bad {
+      border-color: #dc2626;
+      background: #fff5f5;
+      color: #991b1b;
+    }
+    .mini-table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 4px;
+      max-height: 300px;
+    }
+    .mini-table {
+      min-width: 640px;
+      font-size: 12px;
+    }
+    .mini-table th,
+    .mini-table td {
+      padding: 7px 8px;
+    }
+    .domain-form {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.7fr) auto;
+      gap: 8px;
+      align-items: end;
+      margin-bottom: 10px;
+    }
+    .domain-form label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.35px;
+      margin-bottom: 5px;
+    }
+    .domain-form input {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid #888;
+      background: #fff;
+      color: #111;
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+    .domain-form button {
+      min-height: 34px;
+      border: 1px solid #888;
+      background: #f4f5f7;
+      color: #111;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 0 12px;
+    }
+    .domain-result {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 4px;
+      padding: 8px;
+      min-height: 66px;
+      font-size: 12px;
+    }
+    .domain-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(120px, 1fr));
+      gap: 8px;
+    }
+    .domain-cell {
+      border: 1px solid #d4d4d4;
+      background: #f7f7f7;
+      padding: 7px;
+      min-width: 0;
+    }
+    .domain-cell .label {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.35px;
+      margin-bottom: 4px;
+    }
+    .domain-cell .value {
+      font-size: 12px;
+      font-weight: 700;
+      color: #111;
+      overflow-wrap: anywhere;
+    }
     .runtime-grid {
       display: grid;
       grid-template-columns: 1fr;
@@ -881,6 +1023,7 @@ function renderMonitorPageHtml(options = {}) {
     @media (max-width: 1320px) {
       .grid { grid-template-columns: repeat(4, minmax(140px, 1fr)); }
       .layout { grid-template-columns: 1fr; }
+      .ops-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 900px) {
       .grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
@@ -922,11 +1065,15 @@ function renderMonitorPageHtml(options = {}) {
       }
       .event-toolbar input,
       .event-toolbar select,
+      .domain-form input,
+      .domain-form button,
       .account-toolbar select,
       .account-toolbar button {
         flex: 1 1 100%;
         width: 100%;
       }
+      .domain-form { grid-template-columns: 1fr; }
+      .domain-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -970,8 +1117,10 @@ function renderMonitorPageHtml(options = {}) {
             <div class="runtime-row"><span class="label">Uptime</span><span id="uptime" class="value">-</span></div>
             <div class="runtime-row"><span class="label">Auth Mode</span><span id="authMode" class="value">-</span></div>
             <div class="runtime-row"><span class="label">Queue Backend</span><span id="queueBackend" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">Role</span><span id="serviceRole" class="value">-</span></div>
             <div class="runtime-row"><span class="label">API Port</span><span id="apiPort" class="value">-</span></div>
             <div class="runtime-row"><span class="label">Monitor Port</span><span id="monitorPort" class="value">-</span></div>
+            <div class="runtime-row"><span class="label">Processing</span><span id="processingDepth" class="value">0</span></div>
             <div class="runtime-row"><span class="label">Token Issued</span><span id="tokenIssued" class="value">0</span></div>
             <div class="runtime-row"><span class="label">Retries</span><span id="mailRetry" class="value warn">0</span></div>
             <div class="runtime-row"><span class="label">Total Logs</span><span id="logsTotal" class="value">0</span></div>
@@ -980,6 +1129,19 @@ function renderMonitorPageHtml(options = {}) {
             <div class="runtime-row"><span class="label">WARN Logs</span><span id="levelWarn" class="value warn">0</span></div>
             <div class="runtime-row"><span class="label">ERROR Logs</span><span id="levelError" class="value bad">0</span></div>
             <div class="runtime-row"><span class="label">DEBUG Logs</span><span id="levelDebug" class="value">0</span></div>
+          </div>
+        </article>
+
+        <article class="panel events-panel">
+          <h3>Enterprise Controls</h3>
+          <p>Security and delivery controls currently reported by the running services.</p>
+          <div class="status-list">
+            <div class="status-line"><span class="status-name">Durable Queue</span><span id="durableQueueStatus" class="status-pill">-</span></div>
+            <div class="status-line"><span class="status-name">API Auth</span><span id="apiAuthStatus" class="status-pill">-</span></div>
+            <div class="status-line"><span class="status-name">Web MFA</span><span id="webMfaStatus" class="status-pill">-</span></div>
+            <div class="status-line"><span class="status-name">Delivery Policy</span><span id="deliveryPolicyStatus" class="status-pill">-</span></div>
+            <div class="status-line"><span class="status-name">DKIM Signing</span><span id="dkimStatus" class="status-pill">-</span></div>
+            <div class="status-line"><span class="status-name">Bounce/Complaint Events</span><span id="feedbackStatus" class="status-pill">-</span></div>
           </div>
         </article>
       </aside>
@@ -1008,6 +1170,63 @@ function renderMonitorPageHtml(options = {}) {
             <span class="item sent">Mail Sent</span>
             <span class="item failed">Mail Failed</span>
           </div>
+        </section>
+
+        <section class="ops-grid">
+          <article class="panel">
+            <h3>Delivery Events</h3>
+            <p>Operational delivery counters from the last hour.</p>
+            <div class="mini-table-wrap">
+              <table class="mini-table">
+                <thead>
+                  <tr><th>Event</th><th>Count</th><th>Signal</th></tr>
+                </thead>
+                <tbody id="deliveryEventsBody"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <h3>DKIM & Policy</h3>
+            <p>Signing state, configured DKIM domains, and active provider policy names.</p>
+            <div class="status-list">
+              <div class="status-line"><span class="status-name">DKIM domains</span><span id="dkimDomains" class="status-pill">-</span></div>
+              <div class="status-line"><span class="status-name">Account policy overrides</span><span id="accountPolicyNames" class="status-pill">-</span></div>
+              <div class="status-line"><span class="status-name">Policy buckets</span><span id="policyBucketCount" class="status-pill">-</span></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="ops-grid">
+          <article class="panel">
+            <h3>Domain Health</h3>
+            <p>Check SPF, DKIM, DMARC, MX, MTA-STS, and TLS-RPT records without leaving the legacy panel.</p>
+            <form id="domainHealthForm" class="domain-form" autocomplete="off">
+              <div>
+                <label for="domainInput">Domain</label>
+                <input id="domainInput" type="text" placeholder="example.com" inputmode="url" />
+              </div>
+              <div>
+                <label for="selectorInput">DKIM selectors</label>
+                <input id="selectorInput" type="text" placeholder="default,mail" />
+              </div>
+              <button type="submit">Check</button>
+            </form>
+            <div id="domainHealthResult" class="domain-result">No domain checked yet.</div>
+          </article>
+
+          <article class="panel">
+            <h3>Provider Policy Matrix</h3>
+            <p>Configured recipient-domain limits used by the worker throttling layer.</p>
+            <div class="mini-table-wrap">
+              <table class="mini-table">
+                <thead>
+                  <tr><th>Bucket</th><th>/min</th><th>/hour</th><th>/day</th><th>Conn</th><th>Retry</th></tr>
+                </thead>
+                <tbody id="policiesBody"></tbody>
+              </table>
+            </div>
+          </article>
         </section>
       </section>
     </section>
@@ -1083,7 +1302,9 @@ function renderMonitorPageHtml(options = {}) {
     const updateCheckPath = "${updateCheckPath}";
     const updateApplyPath = "${updateApplyPath}";
     const updatePagePath = "${updatePagePath}";
+    const domainHealthPath = "${domainHealthPath}";
     const csrfToken = "${csrfToken}";
+    const webMfaRequired = ${webMfaRequired};
     const state = {
       snapshot: null,
       levelFilter: "ALL",
@@ -1104,8 +1325,10 @@ function renderMonitorPageHtml(options = {}) {
       uptime: document.getElementById("uptime"),
       authMode: document.getElementById("authMode"),
       queueBackend: document.getElementById("queueBackend"),
+      serviceRole: document.getElementById("serviceRole"),
       apiPort: document.getElementById("apiPort"),
       monitorPort: document.getElementById("monitorPort"),
+      processingDepth: document.getElementById("processingDepth"),
       tokenIssued: document.getElementById("tokenIssued"),
       mailRetry: document.getElementById("mailRetry"),
       logsTotal: document.getElementById("logsTotal"),
@@ -1126,6 +1349,21 @@ function renderMonitorPageHtml(options = {}) {
       searchInput: document.getElementById("searchInput"),
       levelFilter: document.getElementById("levelFilter"),
       checkUpdateBtn: document.getElementById("check-update-btn"),
+      durableQueueStatus: document.getElementById("durableQueueStatus"),
+      apiAuthStatus: document.getElementById("apiAuthStatus"),
+      webMfaStatus: document.getElementById("webMfaStatus"),
+      deliveryPolicyStatus: document.getElementById("deliveryPolicyStatus"),
+      dkimStatus: document.getElementById("dkimStatus"),
+      feedbackStatus: document.getElementById("feedbackStatus"),
+      deliveryEventsBody: document.getElementById("deliveryEventsBody"),
+      dkimDomains: document.getElementById("dkimDomains"),
+      accountPolicyNames: document.getElementById("accountPolicyNames"),
+      policyBucketCount: document.getElementById("policyBucketCount"),
+      policiesBody: document.getElementById("policiesBody"),
+      domainHealthForm: document.getElementById("domainHealthForm"),
+      domainInput: document.getElementById("domainInput"),
+      selectorInput: document.getElementById("selectorInput"),
+      domainHealthResult: document.getElementById("domainHealthResult"),
     };
 
     let es = null;
@@ -1158,6 +1396,11 @@ function renderMonitorPageHtml(options = {}) {
         window.location.href = updatePagePath;
       });
     }
+
+    ids.domainHealthForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void checkDomainHealth();
+    });
 
     connectSse();
     refreshNow();
@@ -1258,10 +1501,12 @@ function renderMonitorPageHtml(options = {}) {
       ids.uptime.textContent = sec(snapshot.uptimeSec);
       ids.authMode.textContent = r.authMode || "-";
       ids.queueBackend.textContent = r.queueBackend || "-";
+      ids.serviceRole.textContent = r.role || "-";
       ids.apiPort.textContent = n(r.port);
       ids.monitorPort.textContent = n(
         r.monitorPort === null || r.monitorPort === undefined ? r.port : r.monitorPort,
       );
+      ids.processingDepth.textContent = n(r.processingDepth);
       ids.tokenIssued.textContent = n(t.authTokenIssuedTotal);
       ids.mailRetry.textContent = n(t.mailRetryTotal);
       ids.logsTotal.textContent = n(t.logsTotal);
@@ -1272,10 +1517,174 @@ function renderMonitorPageHtml(options = {}) {
       ids.levelDebug.textContent = n(lvl.DEBUG);
       ids.updated.textContent = "Updated: " + (snapshot.generatedAt || "-");
 
+      renderEnterpriseControls(snapshot);
+      renderDeliveryEvents(r.deliveryEvents || {});
+      renderPolicySummary(r.deliveryPolicy || {});
+      renderPolicies(r.deliveryPolicy || {});
       renderAccountOptions(snapshot.accounts || []);
       renderAccounts(snapshot.accounts || []);
       renderEvents(snapshot.recent || []);
       renderTimeline(snapshot.timeline || []);
+    }
+
+    function renderEnterpriseControls(snapshot) {
+      const runtime = snapshot.runtime || {};
+      const deliveryEvents = runtime.deliveryEvents || {};
+      const policy = runtime.deliveryPolicy || {};
+      const dkim = runtime.dkim || {};
+
+      setPill(
+        ids.durableQueueStatus,
+        runtime.queueBackend === "memory" ? "warn" : runtime.queueBackend ? "ok" : "warn",
+        runtime.queueBackend === "memory" ? "dev memory" : runtime.queueBackend || "unknown",
+      );
+      setPill(
+        ids.apiAuthStatus,
+        runtime.authMode === "none" ? "bad" : runtime.authMode ? "ok" : "warn",
+        runtime.authMode || "unknown",
+      );
+      setPill(
+        ids.webMfaStatus,
+        webMfaRequired === true ? "ok" : webMfaRequired === false ? "warn" : "warn",
+        webMfaRequired === true ? "enabled" : webMfaRequired === false ? "dev off" : "unknown",
+      );
+      setPill(ids.deliveryPolicyStatus, policy.enabled ? "ok" : "warn", policy.enabled ? "enabled" : "off");
+      setPill(ids.dkimStatus, dkim.enabled ? "ok" : "warn", dkim.enabled ? "enabled" : "off");
+
+      const feedbackCount =
+        Number(deliveryEvents.bounced || 0) +
+        Number(deliveryEvents.complaint || 0) +
+        Number(deliveryEvents.deferred || 0);
+      setPill(ids.feedbackStatus, feedbackCount > 0 ? "ok" : "warn", feedbackCount > 0 ? n(feedbackCount) : "idle");
+    }
+
+    function renderDeliveryEvents(events) {
+      const ordered = ["queued", "processing", "sent", "delivered", "deferred", "retrying", "bounced", "complaint", "failed", "dead-lettered"];
+      const names = [...new Set([...ordered, ...Object.keys(events || {}).sort()])];
+      const rows = names
+        .map((name) => {
+          const count = Number(events && events[name] ? events[name] : 0);
+          const signal = ["bounced", "complaint", "failed", "dead-lettered"].includes(name)
+            ? "risk"
+            : ["deferred", "retrying"].includes(name)
+              ? "watch"
+              : "normal";
+          return (
+            "<tr><td>" +
+            esc(name) +
+            "</td><td>" +
+            n(count) +
+            "</td><td><span class='status-pill " +
+            (signal === "risk" ? "bad" : signal === "watch" ? "warn" : "ok") +
+            "'>" +
+            esc(signal) +
+            "</span></td></tr>"
+          );
+        })
+        .join("");
+      ids.deliveryEventsBody.innerHTML = rows || "<tr><td colspan='3' class='empty'>No delivery events yet.</td></tr>";
+    }
+
+    function renderPolicySummary(policy) {
+      const dkim = (state.snapshot && state.snapshot.runtime && state.snapshot.runtime.dkim) || {};
+      const domains = Array.isArray(dkim.domains) && dkim.domains.length > 0 ? dkim.domains.join(", ") : "-";
+      const accountPolicies =
+        Array.isArray(policy.accountPolicyNames) && policy.accountPolicyNames.length > 0
+          ? policy.accountPolicyNames.join(", ")
+          : "-";
+      const buckets = policy.policies && typeof policy.policies === "object" ? Object.keys(policy.policies).length : 0;
+      ids.dkimDomains.textContent = domains;
+      ids.accountPolicyNames.textContent = accountPolicies;
+      ids.policyBucketCount.textContent = n(buckets);
+    }
+
+    function renderPolicies(policy) {
+      const policies = policy.policies && typeof policy.policies === "object" ? policy.policies : {};
+      const names = Object.keys(policies).sort();
+      if (names.length === 0) {
+        ids.policiesBody.innerHTML = "<tr><td colspan='6' class='empty'>No delivery policies configured.</td></tr>";
+        return;
+      }
+
+      ids.policiesBody.innerHTML = names
+        .map((name) => {
+          const item = policies[name] || {};
+          return (
+            "<tr><td>" +
+            esc(name) +
+            "</td><td>" +
+            n(item.perMinute) +
+            "</td><td>" +
+            n(item.perHour) +
+            "</td><td>" +
+            n(item.perDay) +
+            "</td><td>" +
+            n(item.concurrentConnections) +
+            "</td><td>" +
+            n(item.maxRetryAttempts) +
+            "</td></tr>"
+          );
+        })
+        .join("");
+    }
+
+    async function checkDomainHealth() {
+      const domain = String(ids.domainInput.value || "").trim();
+      const selector = String(ids.selectorInput.value || "").trim();
+      if (!domain) {
+        ids.domainHealthResult.textContent = "Domain is required.";
+        return;
+      }
+      ids.domainHealthResult.textContent = "Checking " + domain + "...";
+      try {
+        const url = domainHealthPath + "/" + encodeURIComponent(domain) +
+          (selector ? "?selector=" + encodeURIComponent(selector) : "");
+        const response = await fetch(url, { cache: "no-store" });
+        const payload = await parseJsonSafely(response);
+        if (!response.ok) {
+          throw new Error((payload && payload.error) || "Domain health check failed.");
+        }
+        renderDomainHealth(payload || {});
+      } catch (error) {
+        ids.domainHealthResult.innerHTML =
+          "<span class='status-pill bad'>error</span> " +
+          esc(error && error.message ? error.message : "Domain health check failed.");
+      }
+    }
+
+    function renderDomainHealth(result) {
+      const dkimOk = Array.isArray(result.dkim) && result.dkim.some((entry) => entry && entry.ok);
+      const cells = [
+        ["Overall", result.ok ? "ok" : "needs work", result.ok],
+        ["SPF", result.spf && result.spf.ok ? "ok" : "missing/fail", result.spf && result.spf.ok],
+        ["DKIM", dkimOk ? "ok" : "missing/fail", dkimOk],
+        ["DMARC", result.dmarc && result.dmarc.ok ? (result.dmarc.policy || "ok") : "missing/fail", result.dmarc && result.dmarc.ok],
+        ["MX", result.mx && result.mx.ok ? "ok" : "missing/fail", result.mx && result.mx.ok],
+        ["MTA-STS", result.mtaSts && result.mtaSts.ok ? "ok" : "missing", result.mtaSts && result.mtaSts.ok],
+        ["TLS-RPT", result.tlsRpt && result.tlsRpt.ok ? "ok" : "missing", result.tlsRpt && result.tlsRpt.ok],
+      ];
+      ids.domainHealthResult.innerHTML =
+        "<div class='domain-grid'>" +
+        cells
+          .map(
+            (cell) =>
+              "<div class='domain-cell'><div class='label'>" +
+              esc(cell[0]) +
+              "</div><div class='value'><span class='status-pill " +
+              (cell[2] ? "ok" : "warn") +
+              "'>" +
+              esc(cell[1]) +
+              "</span></div></div>",
+          )
+          .join("") +
+        "</div><pre class='json'>" +
+        esc(safeJson(result, true)) +
+        "</pre>";
+    }
+
+    function setPill(element, kind, text) {
+      element.className = "status-pill " + (kind || "");
+      element.textContent = text || "-";
     }
 
     function setAccountFilter(value) {
