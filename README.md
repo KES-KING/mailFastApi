@@ -322,6 +322,7 @@ Latest local verification summary is available in:
 | `git diff --check` | passed |
 | Web visual smoke | Playwright screenshots captured under `docs/assets/` |
 | Autocannon load smoke | HTTP `202` responses recorded; no non-2xx status bucket reported; avg latency 7.15 ms |
+| Overload dry-run | current plan calculated as 150 attempts, 20 concurrency, no real mail sent |
 
 The load smoke test uses a temporary API-only instance with the worker disabled, so it validates
 queue acceptance and API overhead without sending real email.
@@ -337,6 +338,7 @@ Load test templates:
 ```bash
 k6 run Tests/load/k6-send.js
 ACCESS_TOKEN=<JWT_TOKEN> npm run test:load:autocannon
+npm run test:overload
 ```
 
 Autocannon options:
@@ -350,6 +352,33 @@ Autocannon options:
 
 The autocannon helper writes a temporary HAR file so `Authorization: Bearer <token>` is passed
 without fragile shell quoting.
+
+Real SMTP overload test:
+
+```bash
+# Plan only; no real mail is sent.
+npm run test:overload
+
+# Current local API limit profile: RATE_LIMIT_MAX=120, so default total is 150 attempts.
+OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+
+# Provider-owned SMTP stress profile. Raise RATE_LIMIT_MAX first if API limit should not be the bottleneck.
+OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=50 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+```
+
+Overload script behavior:
+
+- Reads auth and `TEST_MAIL_TO` from `.env`.
+- Sends through `POST /send`, not directly through Nodemailer.
+- Uses `OVERLOAD_SMTP_ACCOUNT`/`SMTP_ACCOUNT` to force a specific encrypted SMTP account.
+- Defaults to dry-run until `OVERLOAD_CONFIRM_REAL_SEND=true` is set.
+- Writes a JSON report under `logs/overload-report-*.json` unless `OVERLOAD_REPORT_PATH` is set.
+- Masks the test recipient in console/report target summary.
+
+With the current development `.env`, the first meaningful overload number is `150` attempts:
+`RATE_LIMIT_MAX=120` per `60000ms`, plus 25 percent headroom to verify `429` behavior. Because the SMTP
+provider is under your control, the second-stage provider stress number is `1000` attempts after increasing
+API rate limits enough that MailFastApi can queue the burst.
 
 ## Log Dashboard
 

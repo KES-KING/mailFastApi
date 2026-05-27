@@ -169,6 +169,19 @@ Autocannon template:
 ACCESS_TOKEN=<JWT_TOKEN> npm run test:load:autocannon
 ```
 
+Real MailFastApi endpoint overload template:
+
+```bash
+# Plan only; does not send mail.
+npm run test:overload
+
+# API rate-limit overload. Current dev default is 150 attempts when RATE_LIMIT_MAX=120.
+OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+
+# SMTP-provider stress profile. Use when the SMTP provider and recipient mailbox are controlled by you.
+OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=50 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+```
+
 Useful environment options:
 
 - `BASE_URL=http://127.0.0.1:3000`
@@ -177,9 +190,15 @@ Useful environment options:
 - `OVERALL_RATE=100`
 - `TEST_TO=load@example.com`
 - `RENDER_STATUS_CODES=true`
+- `OVERLOAD_SMTP_ACCOUNT=mailfastapi main`
+- `OVERLOAD_TEST_MAIL_TO=<recipient>` or `.env` `TEST_MAIL_TO`
+- `OVERLOAD_REPORT_PATH=logs/overload-report.json`
 
 The autocannon helper writes a temporary HAR request so `Authorization: Bearer <token>`
 is passed safely across shells, including Windows PowerShell.
+
+The overload helper uses `POST /send` with idempotency keys and keeps real sending disabled until
+`OVERLOAD_CONFIRM_REAL_SEND=true` is present.
 
 ## 10. Extending the Suite
 

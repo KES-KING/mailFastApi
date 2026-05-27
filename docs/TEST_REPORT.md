@@ -32,7 +32,7 @@ Result:
 | Passed | 72 |
 | Failed | 0 |
 | Skipped | 1 |
-| Duration | 3427.19 ms |
+| Duration | 3660.7328 ms |
 
 The skipped test is the explicit real SMTP send path. It is intentionally skipped unless
 `mailsend` mode and recipient SMTP test settings are provided.
@@ -50,11 +50,33 @@ node --check src/secureStore.js
 node --check src/worker.js
 node --check scripts/updater.js
 node --check Tests/load/autocannon-send.js
+node --check Tests/load/overload-send.js
 node --check Tests/unit/appSettings.test.js
 git diff --check
 ```
 
 Result: pass.
+
+## Overload Plan Dry Run
+
+Command:
+
+```bash
+npm run test:overload
+```
+
+Result: pass. The helper calculated the current development overload profile without sending real mail:
+
+| Item | Value |
+|---|---:|
+| Profile | `api-limit` |
+| Total attempts | 150 |
+| Concurrency | 20 |
+| API rate limit | 120 / 60000 ms |
+| Queue backend | `memory` |
+| Worker concurrency | 2 |
+
+Real overload execution remains opt-in with `OVERLOAD_CONFIRM_REAL_SEND=true`.
 
 ## Web Visual Smoke
 
