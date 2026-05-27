@@ -372,6 +372,12 @@ OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
 
 # Provider-owned SMTP stress profile. Raise RATE_LIMIT_MAX first if API limit should not be the bottleneck.
 OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=50 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+
+# Heavier payload test. This sends 1 MB HTML bodies through the MailFastApi endpoint.
+OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=100 OVERLOAD_HTML_MB=1 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+
+# Max-performance profile for provider-owned infrastructure.
+OVERLOAD_PROFILE=max-performance OVERLOAD_TOTAL=2000 OVERLOAD_CONCURRENCY=150 OVERLOAD_HTML_MB=2 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
 ```
 
 Overload script behavior:
@@ -379,6 +385,7 @@ Overload script behavior:
 - Reads auth and `TEST_MAIL_TO` from `.env`.
 - Sends through `POST /send`, not directly through Nodemailer.
 - Uses `OVERLOAD_SMTP_ACCOUNT`/`SMTP_ACCOUNT` to force a specific encrypted SMTP account.
+- Uses `OVERLOAD_HTML_MB` or `OVERLOAD_HTML_BYTES` to control the per-message HTML payload size.
 - Defaults to dry-run until `OVERLOAD_CONFIRM_REAL_SEND=true` is set.
 - Writes a JSON report under `logs/overload-report-*.json` unless `OVERLOAD_REPORT_PATH` is set.
 - Masks the test recipient in console/report target summary.
@@ -386,7 +393,9 @@ Overload script behavior:
 With the current development `.env`, the first meaningful overload number is `150` attempts:
 `RATE_LIMIT_MAX=120` per `60000ms`, plus 25 percent headroom to verify `429` behavior. Because the SMTP
 provider is under your control, the second-stage provider stress number is `1000` attempts after increasing
-API rate limits enough that MailFastApi can queue the burst.
+API rate limits enough that MailFastApi can queue the burst. The `max-performance` profile is intended only
+for controlled provider-owned infrastructure because MB-sized payloads can generate gigabytes of real mail
+traffic quickly.
 
 ## Log Dashboard
 

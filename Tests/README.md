@@ -180,6 +180,12 @@ OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
 
 # SMTP-provider stress profile. Use when the SMTP provider and recipient mailbox are controlled by you.
 OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=50 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+
+# Heavy payload profile. This sends 1 MB HTML bodies per request.
+OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=100 OVERLOAD_HTML_MB=1 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
+
+# Max-performance profile for controlled provider-owned infrastructure.
+OVERLOAD_PROFILE=max-performance OVERLOAD_TOTAL=2000 OVERLOAD_CONCURRENCY=150 OVERLOAD_HTML_MB=2 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
 ```
 
 Useful environment options:
@@ -191,7 +197,9 @@ Useful environment options:
 - `TEST_TO=load@example.com`
 - `RENDER_STATUS_CODES=true`
 - `OVERLOAD_SMTP_ACCOUNT=mailfastapi main`
+- `OVERLOAD_PROFILE=api-limit|smtp-provider|max-performance`
 - `OVERLOAD_TEST_MAIL_TO=<recipient>` or `.env` `TEST_MAIL_TO`
+- `OVERLOAD_HTML_MB=1` for MB-sized message bodies, or `OVERLOAD_HTML_BYTES=1048576`
 - `OVERLOAD_REPORT_PATH=logs/overload-report.json`
 
 The autocannon helper writes a temporary HAR request so `Authorization: Bearer <token>`

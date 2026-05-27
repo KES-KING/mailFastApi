@@ -46,20 +46,15 @@ function loadConfig(env) {
   const workerConcurrency = toInt(env.WORKER_CONCURRENCY, 2);
   const profile = clean(env.OVERLOAD_PROFILE || "api-limit").toLowerCase();
 
-  const recommendedTotal =
-    profile === "smtp-provider"
-      ? Math.max(1000, rateLimitMax + 1)
-      : Math.max(rateLimitMax + Math.ceil(rateLimitMax * 0.25), rateLimitMax + 1);
-  const recommendedConcurrency =
-    profile === "smtp-provider"
-      ? Math.max(25, workerConcurrency * 10)
-      : Math.max(10, workerConcurrency * 10);
+  const recommendedTotal = resolveRecommendedTotal(profile, rateLimitMax);
+  const recommendedConcurrency = resolveRecommendedConcurrency(profile, workerConcurrency);
 
   const total = toInt(env.OVERLOAD_TOTAL, recommendedTotal);
   const concurrency = Math.max(1, toInt(env.OVERLOAD_CONCURRENCY, recommendedConcurrency));
   const batchDelayMs = Math.max(0, toInt(env.OVERLOAD_BATCH_DELAY_MS, 0));
   const timeoutMs = Math.max(1000, toInt(env.OVERLOAD_REQUEST_TIMEOUT_MS, 15000));
   const testRecipient = clean(env.OVERLOAD_TEST_MAIL_TO || env.TEST_MAIL_TO);
+  const htmlBytes = resolveHtmlBytes(env);
 
   if (!testRecipient) {
     throw new Error("TEST_MAIL_TO or OVERLOAD_TEST_MAIL_TO is required.");
@@ -81,7 +76,9 @@ function loadConfig(env) {
     category: clean(env.MAIL_CATEGORY || env.OVERLOAD_MAIL_CATEGORY || "transactional"),
     tenantId: clean(env.TENANT_ID || env.OVERLOAD_TENANT_ID || "overload_test"),
     subjectPrefix: clean(env.OVERLOAD_SUBJECT_PREFIX || "MailFastApi overload test"),
-    htmlBytes: Math.max(32, toInt(env.OVERLOAD_HTML_BYTES, 512)),
+    htmlBytes,
+    htmlMb: Math.round((htmlBytes / 1024 / 1024) * 100) / 100,
+    estimatedTotalPayloadBytes: htmlBytes * total,
     confirmRealSend: toBoolean(env.OVERLOAD_CONFIRM_REAL_SEND, false),
     reportPath:
       clean(env.OVERLOAD_REPORT_PATH) ||
@@ -237,6 +234,9 @@ function buildReport(config, results, startedAt, durationMs) {
       concurrency: config.concurrency,
       batchDelayMs: config.batchDelayMs,
       requestTimeoutMs: config.timeoutMs,
+      htmlBytes: config.htmlBytes,
+      htmlMb: config.htmlMb,
+      estimatedTotalPayloadBytes: config.estimatedTotalPayloadBytes,
       rateLimitMax: config.rateLimitMax,
       rateLimitWindowMs: config.rateLimitWindowMs,
       queueBackend: config.queueBackend,
@@ -264,11 +264,18 @@ function printPlan(config) {
   console.log(`- smtp account: ${config.smtpAccount || "default"}`);
   console.log(`- total attempts: ${config.total}`);
   console.log(`- concurrency: ${config.concurrency}`);
+  console.log(
+    `- message html size: ${formatBytes(config.htmlBytes)} each, estimated total ${formatBytes(
+      config.estimatedTotalPayloadBytes,
+    )}`,
+  );
   console.log(`- api rate limit: ${config.rateLimitMax}/${config.rateLimitWindowMs}ms`);
   console.log(`- queue: ${config.queueBackend}, max=${config.queueMaxSize}`);
   console.log(`- worker concurrency: ${config.workerConcurrency}`);
   if (config.profile === "api-limit") {
     console.log("- expected: API should queue up to the configured rate limit, then return 429.");
+  } else if (config.profile === "max-performance") {
+    console.log("- expected: API, queue, worker, and SMTP provider are pushed with high concurrency and MB payloads.");
   } else {
     console.log("- expected: SMTP provider/worker/queue path is stressed; raise API rate limit first.");
   }
@@ -343,6 +350,52 @@ function toBoolean(value, fallback) {
 function toInt(value, fallback) {
   const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveHtmlBytes(env) {
+  const explicitMb = clean(env.OVERLOAD_HTML_MB);
+  if (explicitMb) {
+    const parsedMb = Number.parseFloat(explicitMb.replace(",", "."));
+    if (!Number.isFinite(parsedMb) || parsedMb <= 0) {
+      throw new Error("OVERLOAD_HTML_MB must be a positive number.");
+    }
+    return Math.max(32, Math.round(parsedMb * 1024 * 1024));
+  }
+  return Math.max(32, toInt(env.OVERLOAD_HTML_BYTES, 512));
+}
+
+function resolveRecommendedTotal(profile, rateLimitMax) {
+  if (profile === "max-performance") {
+    return 2000;
+  }
+  if (profile === "smtp-provider") {
+    return Math.max(1000, Math.min(rateLimitMax + 1, 5000));
+  }
+  return Math.max(rateLimitMax + Math.ceil(rateLimitMax * 0.25), rateLimitMax + 1);
+}
+
+function resolveRecommendedConcurrency(profile, workerConcurrency) {
+  if (profile === "max-performance") {
+    return Math.max(100, workerConcurrency * 4);
+  }
+  if (profile === "smtp-provider") {
+    return Math.max(25, workerConcurrency * 10);
+  }
+  return Math.max(10, workerConcurrency * 10);
+}
+
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${Math.round((bytes / 1024 / 1024 / 1024) * 100) / 100} GB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${Math.round((bytes / 1024 / 1024) * 100) / 100} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${Math.round((bytes / 1024) * 100) / 100} KB`;
+  }
+  return `${bytes} B`;
 }
 
 function clean(value) {
