@@ -159,7 +159,10 @@ The separate web panel service listens on fixed port `8080`.
 - `GET /metrics-view` -> authenticated formatted Prometheus metrics page
 - `GET /raw-view` -> authenticated formatted snapshot page
 - `GET /metrics` -> authenticated proxied Prometheus text metrics
+- `GET /update` -> authenticated legacy update control page with progress bar
 - `GET /update/check` -> authenticated secure updater check
+- `POST /update/start` -> authenticated secure updater background start with CSRF
+- `GET /update/status` -> authenticated secure updater progress snapshot
 - `POST /update/apply` -> authenticated secure updater apply with CSRF
 
 The live UI includes SMTP account filtering. Use `smtpAccount` in `/send` requests to route mail and to make account-specific views reliable.
@@ -227,6 +230,7 @@ Security controls:
 - `UPDATER_REQUIRE_SIGNED_TAG=true` requires signed annotated tags in tag mode.
 - Post-merge failures trigger rollback to the previous commit when the original worktree was clean.
 - Dependency sync uses `npm ci --omit=dev` when `package-lock.json` exists.
+- If service `PATH` does not include `npm`, the updater tries the `npm-cli.js` bundled next to the active Node.js runtime; `UPDATER_NPM_BIN` can override this.
 - Syntax checks always run; `UPDATER_RUN_TESTS=true` also runs `npm test`.
 - Core and web health checks run after synchronous restarts.
 

@@ -347,6 +347,7 @@ function Ensure-EnvFile {
   Set-EnvDefault "UPDATER_ALLOWED_TAG_PATTERN" "^v[0-9]+\.[0-9]+\.[0-9]+$"
   Set-EnvDefault "UPDATER_REQUIRE_SIGNED_TAG" "false"
   Set-EnvDefault "UPDATER_TARGET" ""
+  Set-EnvDefault "UPDATER_NPM_BIN" ""
   Set-EnvDefault "UPDATER_RUN_TESTS" "false"
   Set-EnvDefault "UPDATER_HEALTH_TIMEOUT_MS" "60000"
   Set-EnvDefault "UPDATER_LOCK_STALE_MS" "1800000"

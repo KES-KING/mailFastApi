@@ -35,8 +35,11 @@ const MONITOR_STREAM_PATH = "/stream";
 const MONITOR_METRICS_VIEW_PATH = "/metrics-view";
 const MONITOR_RAW_VIEW_PATH = "/raw-view";
 const MONITOR_LOGO_ASSET_PATH = "/assets/logo.webp";
+const MONITOR_UPDATE_PAGE_PATH = "/update";
 const MONITOR_UPDATE_CHECK_PATH = "/update/check";
 const MONITOR_UPDATE_APPLY_PATH = "/update/apply";
+const MONITOR_UPDATE_START_PATH = "/update/start";
+const MONITOR_UPDATE_STATUS_PATH = "/update/status";
 
 const METRICS_PATH = normalizePath(process.env.METRICS_PATH || "/metrics");
 const MONITOR_TOKEN = String(process.env.MONITOR_TOKEN || "").trim();
@@ -63,6 +66,7 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 const webAuth = createWebAuth({ secureStore });
 const updateAuth = createUpdateAuthMiddleware(WEB_UPDATE_TOKEN);
+let updateJob = createIdleUpdateJob();
 app.use(webAuth.securityHeaders);
 
 app.get("/health", async (req, res) => {
@@ -182,6 +186,7 @@ app.get(MONITOR_PATH, webAuth.requireAuth, (req, res) => {
     rawViewPath: `${MONITOR_RAW_VIEW_PATH}${tokenSuffix}`,
     logoPath: `${MONITOR_LOGO_ASSET_PATH}${tokenSuffix}`,
     helpUrl: MONITOR_HELP_URL,
+    updatePagePath: `${MONITOR_UPDATE_PAGE_PATH}${tokenSuffix}`,
     updateCheckPath: `${MONITOR_UPDATE_CHECK_PATH}${tokenSuffix}`,
     updateApplyPath: `${MONITOR_UPDATE_APPLY_PATH}${tokenSuffix}`,
     csrfToken: webAuth.getCsrfToken(req),
@@ -201,6 +206,20 @@ app.get("/smtp", webAuth.requireAuth, (req, res) => {
       csrfToken: webAuth.getCsrfToken(req),
       status,
       error,
+    }),
+  );
+});
+
+app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, (req, res) => {
+  res.status(200).type("html").send(
+    renderUpdatePageHtml({
+      csrfToken: webAuth.getCsrfToken(req),
+      checkPath: MONITOR_UPDATE_CHECK_PATH,
+      startPath: MONITOR_UPDATE_START_PATH,
+      statusPath: MONITOR_UPDATE_STATUS_PATH,
+      monitorPath: MONITOR_PATH,
+      smtpSettingsPath: "/smtp",
+      logoutPath: "/logout",
     }),
   );
 });
@@ -359,6 +378,42 @@ app.get(MONITOR_UPDATE_CHECK_PATH, webAuth.requireAuth, updateAuth, async (req, 
   } catch (error) {
     next(error);
   }
+});
+
+app.post(
+  MONITOR_UPDATE_START_PATH,
+  webAuth.requireAuth,
+  webAuth.requireCsrf,
+  updateAuth,
+  (req, res, next) => {
+  if (!WEB_ENABLE_UPDATER) {
+    return res.status(403).json({
+      ok: false,
+      code: "UPDATER_DISABLED",
+      message: "Updater feature is disabled.",
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (body.confirm !== true) {
+    return res.status(400).json({
+      ok: false,
+      code: "CONFIRM_REQUIRED",
+      message: "Update start requires { confirm: true }.",
+    });
+  }
+
+  try {
+    const snapshot = startUpdateJob();
+    return res.status(202).json(snapshot);
+  } catch (error) {
+    next(error);
+  }
+  },
+);
+
+app.get(MONITOR_UPDATE_STATUS_PATH, webAuth.requireAuth, updateAuth, (req, res) => {
+  res.status(200).json(getUpdateJobSnapshot());
 });
 
 app.post(
@@ -713,6 +768,398 @@ function renderSmtpSettingsPageHtml(options = {}) {
 </html>`;
 }
 
+function renderUpdatePageHtml(options = {}) {
+  const csrfToken = escapeHtml(options.csrfToken || "");
+  const checkPath = escapeHtml(options.checkPath || MONITOR_UPDATE_CHECK_PATH);
+  const startPath = escapeHtml(options.startPath || MONITOR_UPDATE_START_PATH);
+  const statusPath = escapeHtml(options.statusPath || MONITOR_UPDATE_STATUS_PATH);
+  const monitorPath = escapeHtml(options.monitorPath || MONITOR_PATH);
+  const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
+  const logoutPath = escapeHtml(options.logoutPath || "/logout");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Update Control</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      background: #dedede;
+      color: #1c1c1c;
+      padding: 10px;
+    }
+    .topbar, .panel {
+      border: 1px solid #c6cbd3;
+      background: #efefef;
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .topbar { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+    h1 { margin: 0; font-size: 20px; }
+    h2 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; }
+    a, button {
+      border: 1px solid #888;
+      background: #f4f5f7;
+      color: #111;
+      text-decoration: none;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-block;
+    }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .cell {
+      border: 1px solid #c6cbd3;
+      background: #fff;
+      padding: 8px;
+      min-height: 58px;
+    }
+    .k { font-size: 11px; color: #444; text-transform: uppercase; margin-bottom: 4px; }
+    .v { font-size: 13px; font-weight: 700; word-break: break-word; }
+    .progress-shell {
+      border: 1px solid #888;
+      background: #fff;
+      height: 28px;
+      width: 100%;
+      overflow: hidden;
+      margin: 12px 0 8px;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2166ad, #22c55e);
+      transition: width 280ms ease;
+    }
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: #333;
+    }
+    .message {
+      border: 1px solid #c6cbd3;
+      background: #fff;
+      min-height: 40px;
+      padding: 9px 10px;
+      font-size: 13px;
+      margin-top: 10px;
+    }
+    .message.ok { border-color: #7eb26d; background: #f0fff4; color: #166534; }
+    .message.err { border-color: #e24d42; background: #fff5f5; color: #991b1b; }
+    .steps {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      border: 1px solid #c6cbd3;
+      background: #fff;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .steps li {
+      display: grid;
+      grid-template-columns: 140px 90px 1fr;
+      gap: 8px;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 8px;
+      font-size: 12px;
+    }
+    .steps li:last-child { border-bottom: 0; }
+    .badge {
+      border: 1px solid #999;
+      background: #f4f5f7;
+      padding: 2px 6px;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 10px;
+      width: fit-content;
+    }
+    .badge.ok { border-color: #16a34a; color: #166534; background: #f0fff4; }
+    .badge.warn, .badge.skipped, .badge.deferred { border-color: #d97706; color: #92400e; background: #fffbeb; }
+    .badge.err, .badge.failed { border-color: #dc2626; color: #991b1b; background: #fff5f5; }
+    .empty { color: #555; padding: 10px; font-size: 12px; }
+    @media (max-width: 860px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .status-grid { grid-template-columns: 1fr; }
+      .steps li { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Update Control</h1>
+    <div class="nav">
+      <a href="${monitorPath}">Monitor</a>
+      <a href="${smtpSettingsPath}">SMTP Accounts</a>
+      <form method="post" action="${logoutPath}" style="margin:0;">
+        <input type="hidden" name="_csrf" value="${csrfToken}" />
+        <button type="submit">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2>Update Status</h2>
+    <div class="progress-shell" aria-label="Update progress">
+      <div id="progressBar" class="progress-bar"></div>
+    </div>
+    <div class="progress-meta">
+      <span id="progressLabel">Hazir</span>
+      <span id="progressPercent">0%</span>
+    </div>
+    <div id="message" class="message">Guncelleme durumu denetleniyor.</div>
+    <div class="status-grid">
+      <div class="cell"><div class="k">Mode</div><div id="mode" class="v">-</div></div>
+      <div class="cell"><div class="k">Target</div><div id="target" class="v">-</div></div>
+      <div class="cell"><div class="k">Commit</div><div id="commit" class="v">-</div></div>
+      <div class="cell"><div class="k">Restart</div><div id="restart" class="v">-</div></div>
+    </div>
+    <div class="nav" style="margin-top:12px;">
+      <button id="checkBtn" type="button">Tekrar Denetle</button>
+      <button id="startBtn" type="button" disabled>Guncellemeyi Baslat</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Steps</h2>
+    <ul id="steps" class="steps"><li class="empty">Henuz islem yok.</li></ul>
+  </section>
+
+  <script>
+    const updateCheckPath = "${checkPath}";
+    const updateStartPath = "${startPath}";
+    const updateStatusPath = "${statusPath}";
+    const csrfToken = "${csrfToken}";
+    const ids = {
+      progressBar: document.getElementById("progressBar"),
+      progressLabel: document.getElementById("progressLabel"),
+      progressPercent: document.getElementById("progressPercent"),
+      message: document.getElementById("message"),
+      mode: document.getElementById("mode"),
+      target: document.getElementById("target"),
+      commit: document.getElementById("commit"),
+      restart: document.getElementById("restart"),
+      steps: document.getElementById("steps"),
+      checkBtn: document.getElementById("checkBtn"),
+      startBtn: document.getElementById("startBtn"),
+    };
+    let pollTimer = null;
+    let updateAvailable = false;
+
+    ids.checkBtn.addEventListener("click", () => {
+      void checkForUpdate();
+    });
+    ids.startBtn.addEventListener("click", () => {
+      void startUpdate();
+    });
+
+    void boot();
+
+    async function boot() {
+      const status = await fetchStatus();
+      if (status && status.status === "running") {
+        applyJob(status);
+        startPolling();
+        return;
+      }
+      await checkForUpdate();
+    }
+
+    async function checkForUpdate() {
+      stopPolling();
+      updateAvailable = false;
+      ids.startBtn.disabled = true;
+      setProgress(8, "Denetleniyor");
+      setMessage("Remote repository denetleniyor.", "");
+      renderSteps([]);
+
+      try {
+        const response = await fetch(updateCheckPath, {
+          cache: "no-store",
+          headers: { "Accept": "application/json" },
+        });
+        const payload = await parseJsonSafely(response);
+        if (!response.ok) {
+          throw new Error((payload && payload.message) || "Guncelleme denetimi basarisiz.");
+        }
+
+        fillTarget(payload);
+        updateAvailable = payload && payload.updateAvailable === true;
+        if (updateAvailable) {
+          setProgress(25, "Yeni surum hazir");
+          setMessage("Yeni surum bulundu. Baslat dugmesi ile ilerleyin.", "ok");
+          ids.startBtn.disabled = false;
+          return;
+        }
+
+        setProgress(100, "Guncel");
+        setMessage("Sistem guncel. Yeni commit/tag bulunmuyor.", "ok");
+      } catch (error) {
+        setProgress(0, "Hata");
+        setMessage(error && error.message ? error.message : "Guncelleme denetimi basarisiz.", "err");
+      }
+    }
+
+    async function startUpdate() {
+      if (!updateAvailable) return;
+      ids.checkBtn.disabled = true;
+      ids.startBtn.disabled = true;
+      setProgress(32, "Baslatiliyor");
+      setMessage("Updater islemi baslatiliyor.", "");
+
+      try {
+        const response = await fetch(updateStartPath, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-CSRF-Token": csrfToken,
+          },
+          body: JSON.stringify({ confirm: true }),
+        });
+        const payload = await parseJsonSafely(response);
+        if (!response.ok) {
+          throw new Error((payload && payload.message) || "Guncelleme baslatilamadi.");
+        }
+        applyJob(payload);
+        startPolling();
+      } catch (error) {
+        ids.checkBtn.disabled = false;
+        ids.startBtn.disabled = false;
+        setProgress(0, "Hata");
+        setMessage(error && error.message ? error.message : "Guncelleme baslatilamadi.", "err");
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(async () => {
+        const status = await fetchStatus();
+        if (!status) return;
+        applyJob(status);
+        if (status.status === "succeeded" || status.status === "failed") {
+          stopPolling();
+          ids.checkBtn.disabled = false;
+          ids.startBtn.disabled = true;
+          if (status.restartDeferred) {
+            setTimeout(() => {
+              window.location.reload();
+            }, 3500);
+          }
+        }
+      }, 900);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const response = await fetch(updateStatusPath, {
+          cache: "no-store",
+          headers: { "Accept": "application/json" },
+        });
+        if (!response.ok) return null;
+        return await response.json();
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function applyJob(job) {
+      const percent = clamp(Number(job.percent || 0), 0, 100);
+      setProgress(percent, job.label || job.status || "Calisiyor");
+      setMessage(job.message || "Guncelleme islemi suruyor.", job.status === "failed" ? "err" : "");
+      renderSteps(job.steps || []);
+      ids.restart.textContent = job.restartDeferred ? "Deferred" : "-";
+      if (job.latest) {
+        fillTarget({ latest: job.latest, releaseMode: job.releaseMode, upstream: job.upstream });
+      }
+      if (job.status === "succeeded") {
+        setProgress(100, "Tamamlandi");
+        setMessage(job.message || "Guncelleme tamamlandi.", "ok");
+      }
+      if (job.status === "failed") {
+        setMessage(job.error || job.message || "Guncelleme basarisiz.", "err");
+      }
+    }
+
+    function fillTarget(payload) {
+      const latest = (payload && payload.latest) || {};
+      ids.mode.textContent = payload && payload.releaseMode ? payload.releaseMode : "-";
+      ids.target.textContent = payload && payload.upstream ? payload.upstream : "-";
+      ids.commit.textContent = latest.shortSha || latest.sha || "-";
+    }
+
+    function renderSteps(steps) {
+      if (!Array.isArray(steps) || steps.length === 0) {
+        ids.steps.innerHTML = '<li class="empty">Henuz islem yok.</li>';
+        return;
+      }
+
+      ids.steps.innerHTML = steps.map((step) => {
+        const status = escapeHtml(step.status || "");
+        return '<li><span>' + escapeHtml(step.name || "-") + '</span><span class="badge ' +
+          status + '">' + status + '</span><span>' + escapeHtml(step.message || "") + '</span></li>';
+      }).join("");
+      ids.steps.scrollTop = ids.steps.scrollHeight;
+    }
+
+    function setProgress(percent, label) {
+      const value = clamp(Number(percent || 0), 0, 100);
+      ids.progressBar.style.width = value + "%";
+      ids.progressPercent.textContent = Math.round(value) + "%";
+      ids.progressLabel.textContent = label || "-";
+    }
+
+    function setMessage(message, kind) {
+      ids.message.className = "message" + (kind ? " " + kind : "");
+      ids.message.textContent = message || "";
+    }
+
+    async function parseJsonSafely(response) {
+      try {
+        return await response.json();
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+  </script>
+</body>
+</html>`;
+}
+
 function parseSmtpAccountForm(body) {
   return {
     name: body.name,
@@ -868,6 +1315,191 @@ function buildUpdaterCommand(scriptPath, args) {
     return { bin: process.platform === "win32" ? "bash.exe" : "bash", args: [scriptPath, ...args] };
   }
   return { bin: scriptPath, args };
+}
+
+function startUpdateJob() {
+  if (updateJob && updateJob.status === "running") {
+    return getUpdateJobSnapshot();
+  }
+
+  if (!WEB_UPDATE_SCRIPT) {
+    throw new Error("WEB_UPDATE_SCRIPT is not configured.");
+  }
+
+  if (!fs.existsSync(WEB_UPDATE_SCRIPT)) {
+    throw new Error(`Updater script not found: ${WEB_UPDATE_SCRIPT}`);
+  }
+
+  const job = {
+    id: crypto.randomUUID(),
+    status: "running",
+    label: "Baslatiliyor",
+    percent: 2,
+    message: "Updater process baslatildi.",
+    steps: [],
+    latest: null,
+    releaseMode: "",
+    upstream: "",
+    restartDeferred: false,
+    result: null,
+    error: "",
+    stderr: "",
+    startedAt: new Date().toISOString(),
+    finishedAt: "",
+    pid: null,
+  };
+  updateJob = job;
+
+  const args = ["--apply", "--yes", "--json", "--progress-jsonl", "--defer-restart"];
+  const command = buildUpdaterCommand(WEB_UPDATE_SCRIPT, args);
+  const child = spawn(command.bin, command.args, {
+    cwd: APP_ROOT,
+    env: {
+      ...process.env,
+      MAILFASTAPI_UPDATER_CALLER: "web",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  job.pid = child.pid || null;
+
+  let stdoutBuffer = "";
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer += chunk.toString("utf8");
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || "";
+    for (const line of lines) {
+      handleUpdaterProgressLine(job, line);
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    job.stderr = `${job.stderr}${chunk.toString("utf8")}`.slice(-6000);
+  });
+
+  child.once("error", (error) => {
+    markUpdateJobFailed(job, error && error.message ? error.message : "Updater process failed.");
+  });
+
+  child.once("close", (code) => {
+    if (stdoutBuffer.trim()) {
+      handleUpdaterProgressLine(job, stdoutBuffer.trim());
+      stdoutBuffer = "";
+    }
+
+    job.finishedAt = new Date().toISOString();
+    job.exitCode = Number.isFinite(Number(code)) ? Number(code) : 1;
+
+    if (job.result) {
+      job.restartDeferred = Boolean(job.result.restartDeferred);
+      job.releaseMode = job.result.releaseMode || job.releaseMode;
+      job.upstream = job.result.upstream || job.upstream;
+      job.latest = job.result.latest || job.latest;
+      job.message = job.result.message || job.message;
+      job.percent = job.result.ok ? 100 : Math.max(job.percent, 1);
+      job.status = job.result.ok ? "succeeded" : "failed";
+      if (!job.result.ok) {
+        job.error = job.result.message || job.error || "Update failed.";
+      }
+      return;
+    }
+
+    if (job.exitCode === 0) {
+      job.status = "succeeded";
+      job.percent = 100;
+      job.message = "Guncelleme tamamlandi.";
+      return;
+    }
+
+    markUpdateJobFailed(job, job.stderr || "Updater process failed.");
+  });
+
+  return getUpdateJobSnapshot();
+}
+
+function handleUpdaterProgressLine(job, line) {
+  const text = String(line || "").trim();
+  if (!text) {
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    job.message = text;
+    return;
+  }
+
+  if (payload.type === "step" && payload.step) {
+    job.steps.push(payload.step);
+    job.percent = Math.max(job.percent, Number(payload.progressPercent || 0));
+    job.label = payload.step.name || job.label;
+    job.message = payload.step.message || job.message;
+    return;
+  }
+
+  if (payload.type === "result" && payload.result) {
+    job.result = payload.result;
+    job.steps = Array.isArray(payload.result.steps) ? payload.result.steps : job.steps;
+    job.percent = Number(payload.result.progressPercent || job.percent);
+    job.latest = payload.result.latest || job.latest;
+    job.releaseMode = payload.result.releaseMode || job.releaseMode;
+    job.upstream = payload.result.upstream || job.upstream;
+    job.restartDeferred = Boolean(payload.result.restartDeferred);
+    job.message = payload.result.message || job.message;
+    return;
+  }
+}
+
+function markUpdateJobFailed(job, message) {
+  job.status = "failed";
+  job.percent = Math.max(job.percent || 0, 1);
+  job.error = message;
+  job.message = message;
+  job.finishedAt = new Date().toISOString();
+}
+
+function getUpdateJobSnapshot() {
+  const job = updateJob || createIdleUpdateJob();
+  return {
+    id: job.id,
+    status: job.status,
+    label: job.label,
+    percent: job.percent,
+    message: job.message,
+    steps: Array.isArray(job.steps) ? job.steps.slice(-50) : [],
+    latest: job.latest || null,
+    releaseMode: job.releaseMode || "",
+    upstream: job.upstream || "",
+    restartDeferred: Boolean(job.restartDeferred),
+    result: job.result || null,
+    error: job.error || "",
+    stderr: job.stderr || "",
+    startedAt: job.startedAt || "",
+    finishedAt: job.finishedAt || "",
+    pid: job.pid || null,
+  };
+}
+
+function createIdleUpdateJob() {
+  return {
+    id: null,
+    status: "idle",
+    label: "Hazir",
+    percent: 0,
+    message: "Guncelleme bekleniyor.",
+    steps: [],
+    latest: null,
+    releaseMode: "",
+    upstream: "",
+    restartDeferred: false,
+    result: null,
+    error: "",
+    stderr: "",
+    startedAt: "",
+    finishedAt: "",
+    pid: null,
+  };
 }
 
 function parseJsonOutput(result) {

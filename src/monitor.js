@@ -391,6 +391,7 @@ function renderMonitorPageHtml(options = {}) {
   const helpUrl = escapeHtml(options.helpUrl || "https://github.com/KES-KING/mailFastApi");
   const updateCheckPath = escapeHtml(options.updateCheckPath || "/monitor/update/check");
   const updateApplyPath = escapeHtml(options.updateApplyPath || "/monitor/update/apply");
+  const updatePagePath = escapeHtml(options.updatePagePath || "/update");
   const csrfToken = escapeHtml(options.csrfToken || "");
   const logoutPath = escapeHtml(options.logoutPath || "/logout");
   const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
@@ -861,7 +862,7 @@ function renderMonitorPageHtml(options = {}) {
         <input type="hidden" name="_csrf" value="${csrfToken}" />
         <button type="submit" class="action-btn">Logout</button>
       </form>
-      <button id="check-update-btn" type="button" class="action-btn">Guncellemeleri Denetle</button>
+      <a class="action-btn" href="${updatePagePath}">Guncelleme Ekrani</a>
     </div>
   </header>
 
@@ -987,6 +988,7 @@ function renderMonitorPageHtml(options = {}) {
     const streamPath = "${streamPath}";
     const updateCheckPath = "${updateCheckPath}";
     const updateApplyPath = "${updateApplyPath}";
+    const updatePagePath = "${updatePagePath}";
     const csrfToken = "${csrfToken}";
     const state = {
       snapshot: null,
@@ -1057,9 +1059,11 @@ function renderMonitorPageHtml(options = {}) {
       setAccountFilter("ALL");
     });
 
-    ids.checkUpdateBtn.addEventListener("click", () => {
-      void checkForUpdates();
-    });
+    if (ids.checkUpdateBtn) {
+      ids.checkUpdateBtn.addEventListener("click", () => {
+        window.location.href = updatePagePath;
+      });
+    }
 
     connectSse();
     refreshNow();
@@ -1076,79 +1080,7 @@ function renderMonitorPageHtml(options = {}) {
     }
 
     async function checkForUpdates() {
-      if (state.updateBusy) return;
-      state.updateBusy = true;
-      setUpdateButtonState("Denetleniyor...");
-
-      try {
-        const checkResponse = await fetch(updateCheckPath, {
-          cache: "no-store",
-          headers: { "Accept": "application/json" },
-        });
-        const checkPayload = await parseJsonSafely(checkResponse);
-        if (!checkResponse.ok) {
-          throw new Error(
-            (checkPayload && checkPayload.message) ||
-              "Guncelleme denetimi basarisiz oldu.",
-          );
-        }
-
-        if (!checkPayload || checkPayload.updateAvailable !== true) {
-          window.alert("Yeni guncelleme bulunmuyor.");
-          return;
-        }
-
-        const latest = checkPayload.latest || {};
-        const summary = latest.subject || latest.message || "Yeni commit bulundu.";
-        const shortSha = latest.shortSha || latest.sha || "-";
-        const ask = window.confirm(
-          "Yeni surum bulundu:\\n\\n" +
-            shortSha +
-            " - " +
-            summary +
-            "\\n\\nGuncelleme yuklensin mi?",
-        );
-        if (!ask) {
-          return;
-        }
-
-        setUpdateButtonState("Guncelleniyor...");
-        const applyResponse = await fetch(updateApplyPath, {
-          method: "POST",
-          cache: "no-store",
-          headers: {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "X-CSRF-Token": csrfToken,
-          },
-          body: JSON.stringify({ confirm: true }),
-        });
-
-        const applyPayload = await parseJsonSafely(applyResponse);
-        if (!applyResponse.ok) {
-          throw new Error(
-            (applyPayload && applyPayload.message) ||
-              "Guncelleme uygulanirken hata olustu.",
-          );
-        }
-
-        window.alert(
-          (applyPayload && applyPayload.message) ||
-            "Guncelleme tamamlandi. Servisler yeniden baslatildi.",
-        );
-        setTimeout(() => {
-          window.location.reload();
-        }, 1500);
-      } catch (error) {
-        const message =
-          error && error.message
-            ? error.message
-            : "Guncelleme islemi basarisiz oldu.";
-        window.alert(message);
-      } finally {
-        state.updateBusy = false;
-        setUpdateButtonState("Guncellemeleri Denetle");
-      }
+      window.location.href = updatePagePath;
     }
 
     async function parseJsonSafely(response) {

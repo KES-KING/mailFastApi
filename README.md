@@ -100,7 +100,7 @@ Important variables:
 - Updater:
   - `UPDATER_RELEASE_MODE=branch|tag`
   - `UPDATER_ALLOWED_TAG_PATTERN` and `UPDATER_REQUIRE_SIGNED_TAG`
-  - `UPDATER_RUN_TESTS`, `UPDATER_HEALTH_TIMEOUT_MS`, `UPDATER_LOCK_STALE_MS`
+  - `UPDATER_NPM_BIN`, `UPDATER_RUN_TESTS`, `UPDATER_HEALTH_TIMEOUT_MS`, `UPDATER_LOCK_STALE_MS`
 
 ## Run
 
@@ -209,7 +209,7 @@ Release modes:
 - `UPDATER_RELEASE_MODE=tag` updates to the latest tag matching `UPDATER_ALLOWED_TAG_PATTERN`.
 - Set `UPDATER_REQUIRE_SIGNED_TAG=true` in tag mode to require signed annotated tags.
 
-The web monitor includes a `Guncellemeleri Denetle` button that calls updater endpoints.
+The web monitor links to the legacy `Update Control` screen. That screen checks updates without browser confirm/alert prompts and shows updater steps with a progress bar. If a service account cannot find `npm`, set `UPDATER_NPM_BIN` or let the updater use the `npm-cli.js` bundled next to the active Node.js runtime.
 
 ## Tests
 

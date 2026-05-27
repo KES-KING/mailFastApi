@@ -377,6 +377,7 @@ ensure_env_file() {
   set_env_default "UPDATER_ALLOWED_TAG_PATTERN" "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
   set_env_default "UPDATER_REQUIRE_SIGNED_TAG" "false"
   set_env_default "UPDATER_TARGET" ""
+  set_env_default "UPDATER_NPM_BIN" ""
   set_env_default "UPDATER_RUN_TESTS" "false"
   set_env_default "UPDATER_HEALTH_TIMEOUT_MS" "60000"
   set_env_default "UPDATER_LOCK_STALE_MS" "1800000"

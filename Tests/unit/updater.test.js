@@ -17,8 +17,17 @@ describe("updater helpers", () => {
 
     assert.equal(options.mode, "check");
     assert.equal(options.json, true);
+    assert.equal(options.progressJsonl, false);
     assert.equal(options.releaseMode, "tag");
     assert.equal(options.target, "v1.2.3");
+  });
+
+  test("parses progress jsonl option", () => {
+    const options = parseArgs(["--apply", "--json", "--progress-jsonl"]);
+
+    assert.equal(options.mode, "apply");
+    assert.equal(options.json, true);
+    assert.equal(options.progressJsonl, true);
   });
 
   test("sorts semantic release tags descending", () => {

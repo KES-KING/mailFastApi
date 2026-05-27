@@ -17,9 +17,26 @@ const CORE_LAUNCHD_LABEL = "com.mailfastapi.core";
 const WEB_LAUNCHD_LABEL = "com.mailfastapi.web";
 const CORE_WINDOWS_TASK = "mailfastapi-core";
 const WEB_WINDOWS_TASK = "mailfastapi-web";
-const NPM_BIN = process.platform === "win32" ? "npm.cmd" : "npm";
 
 const DEFAULT_TAG_PATTERN = "^v[0-9]+\\.[0-9]+\\.[0-9]+$";
+const STEP_PROGRESS = Object.freeze({
+  requirements: 5,
+  fetch: 12,
+  lock: 18,
+  worktree: 24,
+  "fast-forward": 30,
+  preflight: 36,
+  git: 45,
+  dependencies: 62,
+  syntax: 74,
+  tests: 84,
+  restart: 94,
+  health: 98,
+  "rollback-git": 58,
+});
+
+let activeOptions = null;
+let cachedNpmCommand = null;
 
 class UpdaterError extends Error {
   constructor(code, message, exitCode = 1, details = {}) {
@@ -63,6 +80,7 @@ const context = {
   },
   steps: [],
   rollback: null,
+  progressPercent: 0,
 };
 
 function parseArgs(argv) {
@@ -75,6 +93,7 @@ function parseArgs(argv) {
     skipHealth: false,
     deferRestart: false,
     noRollback: false,
+    progressJsonl: false,
     releaseMode: clean(process.env.UPDATER_RELEASE_MODE || "branch").toLowerCase(),
     target: clean(process.env.UPDATER_TARGET || ""),
   };
@@ -108,6 +127,9 @@ function parseArgs(argv) {
         break;
       case "--json":
         options.json = true;
+        break;
+      case "--progress-jsonl":
+        options.progressJsonl = true;
         break;
       case "--release-mode":
         options.releaseMode = readValue(argv, index, arg).toLowerCase();
@@ -164,6 +186,7 @@ Options:
   --defer-restart         Schedule restart after JSON response, for web panel calls.
   --no-rollback           Disable automatic rollback on post-merge failure.
   --json                  Output machine-readable JSON.
+  --progress-jsonl        Emit newline-delimited JSON progress events.
   -h, --help              Show help.
 
 Environment:
@@ -179,6 +202,7 @@ async function main() {
   let options;
   try {
     options = parseArgs(process.argv.slice(2));
+    activeOptions = options;
     context.releaseMode = options.releaseMode;
     context.security.allowedTagPattern = getAllowedTagPattern().source;
     context.security.signedTagRequired = boolEnv("UPDATER_REQUIRE_SIGNED_TAG", false);
@@ -217,7 +241,7 @@ function ensureRequirements(options) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   commandOk("git", ["--version"], "MISSING_GIT", "git command not found.");
   if (options.mode !== "check") {
-    commandOk(NPM_BIN, ["--version"], "MISSING_NPM", "npm command not found.");
+    ensureNpmAvailable();
   }
 
   if (!fs.existsSync(path.join(APP_DIR, ".git"))) {
@@ -237,14 +261,14 @@ function ensureRequirements(options) {
 }
 
 function commandOk(command, args, code, message) {
-  const result = spawnSync(command, args, {
-    cwd: APP_DIR,
-    encoding: "utf8",
-    shell: false,
-  });
+  const result = run(command, args, { allowFailure: true });
   if (result.error || result.status !== 0) {
     throw new UpdaterError(code, message);
   }
+}
+
+function ensureNpmAvailable() {
+  getNpmCommand();
 }
 
 function checkForUpdate(options) {
@@ -587,12 +611,12 @@ function runPreflight() {
 
 function runDependencySync() {
   if (fs.existsSync(path.join(APP_DIR, "package-lock.json"))) {
-    run(NPM_BIN, ["ci", "--omit=dev"]);
+    runNpm(["ci", "--omit=dev"]);
     addStep("dependencies", "ok", "npm ci completed.");
     return;
   }
 
-  run(NPM_BIN, ["install", "--omit=dev"]);
+  runNpm(["install", "--omit=dev"]);
   addStep("dependencies", "ok", "npm install completed.");
 }
 
@@ -614,7 +638,7 @@ function runOptionalTests() {
     return;
   }
 
-  run(NPM_BIN, ["test"]);
+  runNpm(["test"]);
   addStep("tests", "ok", "npm test completed.");
 }
 
@@ -787,6 +811,60 @@ function runGit(args, options = {}) {
   return run("git", args, options);
 }
 
+function runNpm(args, options = {}) {
+  const npmCommand = getNpmCommand();
+  return run(npmCommand.bin, [...npmCommand.args, ...args], options);
+}
+
+function getNpmCommand() {
+  if (cachedNpmCommand) {
+    return cachedNpmCommand;
+  }
+
+  const configured = clean(process.env.UPDATER_NPM_BIN || "");
+  const candidates = [];
+  if (configured) {
+    candidates.push({
+      bin: configured,
+      args: [],
+      label: configured,
+    });
+  }
+
+  const nodeDir = path.dirname(process.execPath);
+  const npmCli = path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js");
+  if (fs.existsSync(npmCli)) {
+    candidates.push({
+      bin: process.execPath,
+      args: [npmCli],
+      label: `${process.execPath} ${npmCli}`,
+    });
+  }
+
+  candidates.push({
+    bin: process.platform === "win32" ? "npm.cmd" : "npm",
+    args: [],
+    label: process.platform === "win32" ? "npm.cmd" : "npm",
+  });
+  if (process.platform === "win32") {
+    candidates.push({ bin: "npm", args: [], label: "npm" });
+  }
+
+  for (const candidate of candidates) {
+    const result = run(candidate.bin, [...candidate.args, "--version"], { allowFailure: true });
+    if (result.status === 0) {
+      cachedNpmCommand = candidate;
+      addStep("npm", "ok", `npm command resolved: ${candidate.label}`);
+      return cachedNpmCommand;
+    }
+  }
+
+  throw new UpdaterError(
+    "MISSING_NPM",
+    "npm command not found. Set UPDATER_NPM_BIN or ensure npm is installed next to the Node.js runtime.",
+  );
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: APP_DIR,
@@ -861,12 +939,22 @@ function writeState(value) {
 }
 
 function addStep(name, status, message) {
-  context.steps.push({
+  const step = {
     name,
     status,
     message,
     at: new Date().toISOString(),
-  });
+  };
+  context.steps.push(step);
+  context.progressPercent = Math.max(context.progressPercent || 0, STEP_PROGRESS[name] || 0);
+  emitProgress({ type: "step", step, progressPercent: context.progressPercent });
+}
+
+function emitProgress(event) {
+  if (!activeOptions || !activeOptions.progressJsonl) {
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
 async function interactiveConfirm(options) {
@@ -901,9 +989,12 @@ function finish(ok, code, message, exitCode) {
   context.ok = ok;
   context.code = code;
   context.message = message;
+  context.progressPercent = ok ? 100 : Math.max(context.progressPercent || 0, 1);
 
   const options = parseArgsSafe(process.argv.slice(2));
-  if (options.json) {
+  if (options.progressJsonl) {
+    process.stdout.write(`${JSON.stringify({ type: "result", result: context })}\n`);
+  } else if (options.json) {
     process.stdout.write(`${JSON.stringify(context)}\n`);
   } else {
     const line = ok ? `[INFO] ${message}` : `[ERROR] ${message}`;
