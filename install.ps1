@@ -84,6 +84,7 @@ function Assert-ProjectFiles {
     "package.json",
     $CoreEntry,
     $WebEntry,
+    "scripts/updater.js",
     $EnvTemplateFile
   )
 
@@ -339,14 +340,21 @@ function Ensure-EnvFile {
   Set-EnvDefault "WEB_PORT" "8080"
   Set-EnvDefault "WEB_HOST" "0.0.0.0"
   Set-EnvDefault "WEB_CORE_BASE_URL" "http://127.0.0.1:$port"
-  Set-EnvDefault "WEB_UPDATE_SCRIPT" "./updater.sh"
+  Set-EnvDefault "WEB_UPDATE_SCRIPT" "./scripts/updater.js"
   Set-EnvDefault "WEB_UPDATE_TIMEOUT_MS" "180000"
   Set-EnvDefault "WEB_UPDATE_TOKEN" ""
+  Set-EnvDefault "UPDATER_RELEASE_MODE" "branch"
+  Set-EnvDefault "UPDATER_ALLOWED_TAG_PATTERN" "^v[0-9]+\.[0-9]+\.[0-9]+$"
+  Set-EnvDefault "UPDATER_REQUIRE_SIGNED_TAG" "false"
+  Set-EnvDefault "UPDATER_TARGET" ""
+  Set-EnvDefault "UPDATER_RUN_TESTS" "false"
+  Set-EnvDefault "UPDATER_HEALTH_TIMEOUT_MS" "60000"
+  Set-EnvDefault "UPDATER_LOCK_STALE_MS" "1800000"
 
   if ($script:EnvCreated) {
-    Set-EnvValue "WEB_ENABLE_UPDATER" "false"
+    Set-EnvValue "WEB_ENABLE_UPDATER" "true"
   } else {
-    Set-EnvDefault "WEB_ENABLE_UPDATER" "false"
+    Set-EnvDefault "WEB_ENABLE_UPDATER" "true"
   }
 
   Protect-EnvFile
@@ -529,7 +537,7 @@ function Show-PostInstall {
   Write-Host "  Stop-ScheduledTask -TaskName $CoreTaskName"
   Write-Host "  Stop-ScheduledTask -TaskName $WebTaskName"
   Write-Host ""
-  Write-Warn "Windows installer disables WEB_ENABLE_UPDATER by default because updater.sh is Unix-oriented."
+  Write-Warn "The updater is git-based. Use tag mode with signed tags for stricter production releases."
   Write-Warn "Open http://127.0.0.1:8080 on first run to create the web panel password."
 }
 

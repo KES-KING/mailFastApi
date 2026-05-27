@@ -10,6 +10,8 @@
     "start:web": "node src/web.js",
     "test": "node Tests/run-tests.js",
     "test:mailsend": "node Tests/run-tests.js mailsend",
+    "update:check": "node scripts/updater.js --check",
+    "update:apply": "node scripts/updater.js --apply --yes",
     "log": "node scripts/log-cli.js",
     "log:mailsender": "node scripts/log-cli.js mailsender"
   },

@@ -159,8 +159,11 @@ The separate web panel service listens on fixed port `8080`.
 - `GET /metrics-view` -> authenticated formatted Prometheus metrics page
 - `GET /raw-view` -> authenticated formatted snapshot page
 - `GET /metrics` -> authenticated proxied Prometheus text metrics
+- `GET /update/check` -> authenticated secure updater check
+- `POST /update/apply` -> authenticated secure updater apply with CSRF
 
 The live UI includes SMTP account filtering. Use `smtpAccount` in `/send` requests to route mail and to make account-specific views reliable.
+When `WEB_UPDATE_TOKEN` is set, update endpoints also require the `x-update-token` header.
 
 ## Redis Queue Notes
 
@@ -205,6 +208,35 @@ CLI dashboard:
 
 ```bash
 npm run log mailsender
+```
+
+## Secure Updater
+
+The updater is implemented in `scripts/updater.js`. `updater.sh` remains as a wrapper for compatibility.
+
+Update modes:
+
+- `branch`: fetches the configured upstream branch and applies only fast-forward updates.
+- `tag`: selects the latest tag matching `UPDATER_ALLOWED_TAG_PATTERN`, or uses `UPDATER_TARGET` when set.
+
+Security controls:
+
+- Working tree must be clean unless `--allow-dirty` is used from CLI.
+- Web panel update calls do not pass `--allow-dirty`.
+- Update apply uses a lock file at `data/updater.lock`.
+- `UPDATER_REQUIRE_SIGNED_TAG=true` requires signed annotated tags in tag mode.
+- Post-merge failures trigger rollback to the previous commit when the original worktree was clean.
+- Dependency sync uses `npm ci --omit=dev` when `package-lock.json` exists.
+- Syntax checks always run; `UPDATER_RUN_TESTS=true` also runs `npm test`.
+- Core and web health checks run after synchronous restarts.
+
+Commands:
+
+```bash
+npm run update:check
+npm run update:apply
+node scripts/updater.js --check --release-mode tag
+node scripts/updater.js --apply --yes --release-mode tag --target v1.2.3
 ```
 
 ## Cross-Platform Deployment

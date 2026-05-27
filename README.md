@@ -16,7 +16,7 @@ Core design:
 Client -> Core API (/send, /auth/token, /health) -> Queue -> Worker -> SMTP Provider
                                      \-> Structured Logger -> SQLite + File + Console
 Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
-                 -> SMTP Account Manager + Update Control (updater.sh)
+                 -> SMTP Account Manager + Secure Update Control (scripts/updater.js)
 ```
 
 ## Key Features
@@ -57,7 +57,8 @@ mailFastApi/
 |   |-- systemLogger.js
 |   `-- systemStore.js
 |-- scripts/
-|   `-- log-cli.js
+|   |-- log-cli.js
+|   `-- updater.js
 |-- docs/
 |   `-- API_DOCS.md
 |-- Tests/
@@ -95,7 +96,11 @@ Important variables:
   - fixed legacy panel port: `8080`
   - `WEB_HOST`, `WEB_CORE_BASE_URL`
   - `WEB_ENABLE_UPDATER`, `WEB_UPDATE_SCRIPT`, `WEB_UPDATE_TIMEOUT_MS`
-  - `WEB_UPDATE_TOKEN` (optional extra protection for update endpoints)
+  - `WEB_UPDATE_TOKEN` (optional `x-update-token` header protection for update endpoints)
+- Updater:
+  - `UPDATER_RELEASE_MODE=branch|tag`
+  - `UPDATER_ALLOWED_TAG_PATTERN` and `UPDATER_REQUIRE_SIGNED_TAG`
+  - `UPDATER_RUN_TESTS`, `UPDATER_HEALTH_TIMEOUT_MS`, `UPDATER_LOCK_STALE_MS`
 
 ## Run
 
@@ -186,15 +191,24 @@ Installer output includes a colored ASCII banner and project GitHub link.
 
 ## Updater
 
-`updater.sh` checks repository updates and applies them safely with fast-forward only:
+The real updater is `scripts/updater.js`; `updater.sh` is a compatibility wrapper.
+It applies updates with a locked, fast-forward-only flow, syncs dependencies, runs syntax checks, restarts services/tasks, runs health checks, and rolls back to the previous commit if a post-merge step fails.
 
 ```bash
-./updater.sh
+npm run update:check
+npm run update:apply
+
+# Compatibility wrapper
 ./updater.sh --check
 ./updater.sh --apply --yes
 ```
 
-When an update is applied, dependencies are synced and both services are restarted.
+Release modes:
+
+- `UPDATER_RELEASE_MODE=branch` updates from the configured upstream branch.
+- `UPDATER_RELEASE_MODE=tag` updates to the latest tag matching `UPDATER_ALLOWED_TAG_PATTERN`.
+- Set `UPDATER_REQUIRE_SIGNED_TAG=true` in tag mode to require signed annotated tags.
+
 The web monitor includes a `Guncellemeleri Denetle` button that calls updater endpoints.
 
 ## Tests

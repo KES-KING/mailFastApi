@@ -50,7 +50,9 @@ const WEB_CORE_BASE_URL = normalizeBaseUrl(
 const WEB_ENABLE_UPDATER = toBoolean(process.env.WEB_ENABLE_UPDATER, true);
 const WEB_UPDATE_TOKEN = String(process.env.WEB_UPDATE_TOKEN || "").trim();
 const WEB_UPDATE_TIMEOUT_MS = Math.max(5000, toInt(process.env.WEB_UPDATE_TIMEOUT_MS, 180000));
-const WEB_UPDATE_SCRIPT = resolveSafeUpdaterPath(process.env.WEB_UPDATE_SCRIPT || "./updater.sh");
+const WEB_UPDATE_SCRIPT = resolveSafeUpdaterPath(
+  process.env.WEB_UPDATE_SCRIPT || "./scripts/updater.js",
+);
 
 const LOGO_FILE_PATH = path.resolve(APP_ROOT, "MailFastApi_Logo.webp");
 const secureStore = createSecureStore();
@@ -375,7 +377,6 @@ app.post(
 
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const confirm = body.confirm === true;
-  const allowDirty = body.allowDirty === true;
 
   if (!confirm) {
     return res.status(400).json({
@@ -386,10 +387,7 @@ app.post(
   }
 
   try {
-    const args = ["--apply", "--yes", "--json"];
-    if (allowDirty) {
-      args.push("--allow-dirty");
-    }
+    const args = ["--apply", "--yes", "--json", "--defer-restart"];
     const result = await runUpdater(args);
     const payload = parseJsonOutput(result);
     if (result.code !== 0) {
@@ -793,11 +791,7 @@ function createUpdateAuthMiddleware(requiredToken) {
 
   return (req, res, next) => {
     const headerToken = req.header("x-update-token");
-    const queryToken = req.query && typeof req.query.updateToken === "string"
-      ? req.query.updateToken
-      : "";
-    const provided = headerToken || queryToken;
-    if (provided && safeEqualStrings(provided, requiredToken)) {
+    if (headerToken && safeEqualStrings(headerToken, requiredToken)) {
       return next();
     }
     return res.status(401).json({ error: "Unauthorized update access." });
@@ -814,7 +808,8 @@ function runUpdater(args) {
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn("bash", [WEB_UPDATE_SCRIPT, ...args], {
+    const command = buildUpdaterCommand(WEB_UPDATE_SCRIPT, args);
+    const child = spawn(command.bin, command.args, {
       cwd: APP_ROOT,
       env: {
         ...process.env,
@@ -856,6 +851,23 @@ function runUpdater(args) {
       });
     });
   });
+}
+
+function buildUpdaterCommand(scriptPath, args) {
+  const ext = path.extname(scriptPath).toLowerCase();
+  if (ext === ".js") {
+    return { bin: process.execPath, args: [scriptPath, ...args] };
+  }
+  if (ext === ".ps1") {
+    return {
+      bin: process.platform === "win32" ? "powershell.exe" : "pwsh",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath, ...args],
+    };
+  }
+  if (ext === ".sh") {
+    return { bin: process.platform === "win32" ? "bash.exe" : "bash", args: [scriptPath, ...args] };
+  }
+  return { bin: scriptPath, args };
 }
 
 function parseJsonOutput(result) {

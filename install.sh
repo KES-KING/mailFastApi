@@ -130,8 +130,8 @@ if [[ ! -f "$APP_DIR/$WEB_ENTRY" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$APP_DIR/updater.sh" ]]; then
-  err "updater.sh not found in APP_DIR"
+if [[ ! -f "$APP_DIR/scripts/updater.js" ]]; then
+  err "scripts/updater.js not found in APP_DIR"
   exit 1
 fi
 
@@ -370,9 +370,16 @@ ensure_env_file() {
   set_env_default "WEB_HOST" "0.0.0.0"
   set_env_default "WEB_CORE_BASE_URL" "http://127.0.0.1:${port}"
   set_env_default "WEB_ENABLE_UPDATER" "true"
-  set_env_default "WEB_UPDATE_SCRIPT" "./updater.sh"
+  set_env_default "WEB_UPDATE_SCRIPT" "./scripts/updater.js"
   set_env_default "WEB_UPDATE_TIMEOUT_MS" "180000"
   set_env_default "WEB_UPDATE_TOKEN" ""
+  set_env_default "UPDATER_RELEASE_MODE" "branch"
+  set_env_default "UPDATER_ALLOWED_TAG_PATTERN" "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+  set_env_default "UPDATER_REQUIRE_SIGNED_TAG" "false"
+  set_env_default "UPDATER_TARGET" ""
+  set_env_default "UPDATER_RUN_TESTS" "false"
+  set_env_default "UPDATER_HEALTH_TIMEOUT_MS" "60000"
+  set_env_default "UPDATER_LOCK_STALE_MS" "1800000"
 
   if [[ "$(id -un)" != "$SERVICE_USER" ]]; then
     ${SUDO} chown "$SERVICE_USER:$SERVICE_GROUP" "$env_path" || true
@@ -583,7 +590,7 @@ print_post_install() {
   echo "  sudo systemctl status ${WEB_SERVICE_NAME}"
   echo "  sudo journalctl -u ${CORE_SERVICE_NAME} -f"
   echo "  sudo journalctl -u ${WEB_SERVICE_NAME} -f"
-  echo "  ./updater.sh"
+  echo "  ./updater.sh --check"
   echo ""
   warn "Review .env values (SMTP, auth, ports, tokens) before production traffic."
 }
