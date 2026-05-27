@@ -429,14 +429,13 @@ function renderMonitorPageHtml(options = {}) {
       min-height: 100vh;
     }
     .topbar {
-      height: 90px;
       min-height: 90px;
       border: 1px solid var(--line);
       border-radius: 4px;
       background: var(--header);
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: stretch;
       padding: 6px 12px;
       gap: 10px;
       margin: 8px 10px 0 10px;
@@ -444,13 +443,25 @@ function renderMonitorPageHtml(options = {}) {
     .topbar-left {
       display: flex;
       align-items: center;
-      min-height: 90px;
+      flex: 0 0 170px;
+      min-width: 0;
     }
     .topbar-right {
       display: flex;
       align-items: center;
-      gap: 10px;
+      align-content: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px;
+      flex: 1 1 auto;
+      min-width: 0;
       margin-left: auto;
+    }
+    .topbar-right form {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
     }
     .toolbar-meta {
       display: flex;
@@ -458,15 +469,28 @@ function renderMonitorPageHtml(options = {}) {
       gap: 14px;
       color: #111;
       font-size: 14px;
-      min-height: 90px;
+      min-width: 0;
     }
     .status-meta {
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 10px;
       color: #111;
       font-size: 12px;
       min-height: 36px;
+      min-width: 260px;
+      flex: 1 1 320px;
+      overflow: hidden;
+    }
+    .status-meta span {
+      min-width: 0;
+    }
+    #conn-text,
+    #updated {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .action-btn {
       border: 1px solid var(--line);
@@ -479,6 +503,11 @@ function renderMonitorPageHtml(options = {}) {
       border-radius: 4px;
       cursor: pointer;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      flex: 0 0 auto;
     }
     .action-btn:hover {
       background: #f2f2f2;
@@ -564,6 +593,7 @@ function renderMonitorPageHtml(options = {}) {
       border-radius: 4px;
       padding: 10px;
       min-height: 92px;
+      min-width: 0;
     }
     .card .k {
       color: var(--muted);
@@ -578,6 +608,7 @@ function renderMonitorPageHtml(options = {}) {
       color: #111;
       margin-bottom: 4px;
       line-height: 1.1;
+      overflow-wrap: anywhere;
     }
     .card .note {
       font-size: 11px;
@@ -681,6 +712,7 @@ function renderMonitorPageHtml(options = {}) {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+      align-items: center;
       margin-bottom: 8px;
     }
     .account-panel {
@@ -725,6 +757,10 @@ function renderMonitorPageHtml(options = {}) {
       flex: 1 1 260px;
       min-width: 180px;
     }
+    .event-toolbar select {
+      flex: 0 0 170px;
+      min-width: 150px;
+    }
     .table-wrap {
       max-height: 580px;
       overflow: auto;
@@ -744,6 +780,7 @@ function renderMonitorPageHtml(options = {}) {
     thead th {
       position: sticky;
       top: 0;
+      z-index: 1;
       text-align: left;
       background: #d9d9d9;
       color: #111;
@@ -816,22 +853,46 @@ function renderMonitorPageHtml(options = {}) {
       .grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
       canvas { min-height: 240px; }
       .topbar {
-        height: 90px;
-        min-height: 90px;
+        min-height: 0;
         padding: 8px 10px;
-        flex-wrap: nowrap;
+        flex-wrap: wrap;
+        align-items: flex-start;
         margin: 8px 8px 0 8px;
       }
+      .topbar-left {
+        flex: 1 1 100%;
+      }
       .topbar-right {
-        width: auto;
-        justify-content: flex-end;
+        width: 100%;
+        justify-content: flex-start;
+        margin-left: 0;
       }
       .status-meta {
+        flex: 1 1 100%;
+        justify-content: flex-start;
         flex-wrap: wrap;
+        min-width: 0;
+        width: 100%;
       }
       .brand-logo {
         width: 120px;
         height: 64px;
+      }
+    }
+    @media (max-width: 560px) {
+      .grid { grid-template-columns: 1fr; }
+      .wrap { padding: 8px; }
+      .action-btn,
+      .topbar-right form,
+      .topbar-right form .action-btn {
+        width: 100%;
+      }
+      .event-toolbar input,
+      .event-toolbar select,
+      .account-toolbar select,
+      .account-toolbar button {
+        flex: 1 1 100%;
+        width: 100%;
       }
     }
   </style>

@@ -72,4 +72,13 @@ describe("monitor SMTP account summaries", () => {
     assert.match(html, /id="eventAccountFilter"/);
     assert.match(html, /id="accountsBody"/);
   });
+
+  test("renders stable legacy monitor toolbar layout", () => {
+    const html = renderMonitorPageHtml({ updatePagePath: "/update" });
+
+    assert.match(html, /Guncelleme Ekrani/);
+    assert.match(html, /href="\/update"/);
+    assert.match(html, /\.topbar-right form/);
+    assert.match(html, /@media \(max-width: 560px\)/);
+  });
 });
