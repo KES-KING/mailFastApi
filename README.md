@@ -194,13 +194,21 @@ Requires Node.js `>=22.5.0` because the encrypted vault uses the built-in `node:
 
 ```bash
 npm install
-npm run start:core
-npm run start:web
+npm start core
+npm start web
 ```
 
 Core URL (default): `http://localhost:3000`
 
 Web panel URL (fixed): `http://localhost:8080`
+
+Start targets:
+
+- `npm start` or `npm start core`: core service using the configured `MAILFASTAPI_ROLE`
+- `npm start web`: legacy web panel on fixed port `8080`
+- `npm start api`: core service with `MAILFASTAPI_ROLE=api`
+- `npm start worker`: worker process with `MAILFASTAPI_ROLE=worker`
+- `npm start all`: core service with API and worker roles
 
 On first web panel access, create the admin password. Then open `SMTP Accounts` and add accounts such as `2fa`, `info@example.com`, or `Bilgi Maili`. Runtime mail delivery reads these accounts from the encrypted SQLite vault.
 
