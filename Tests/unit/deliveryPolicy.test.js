@@ -36,4 +36,24 @@ describe("delivery policy", () => {
     assert.equal(result.reason, "minute_quota_exceeded");
     assert.equal(result.domain, "gmail.com");
   });
+
+  test("counts SMTP attempts, not queued or deferred jobs, for provider quota", () => {
+    const calls = [];
+    const store = {
+      countDeliveryEvents: (filter) => {
+        calls.push(filter);
+        return 0;
+      },
+    };
+    const policy = createDeliveryPolicy({ env: {}, store });
+
+    const result = policy.checkSendPermission({
+      tenantId: "tenant_a",
+      smtpAccount: "default",
+      to: "user@gmail.com",
+    });
+
+    assert.equal(result.allowed, true);
+    assert.deepEqual(calls[0].events, ["sent", "failed", "bounced", "retrying"]);
+  });
 });

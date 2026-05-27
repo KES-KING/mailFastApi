@@ -83,13 +83,20 @@ function createWorker(options) {
         await touchJob(job);
         const permission = checkSendPermission(job);
         if (!permission.allowed) {
-          const retryAfterMs = Math.min(Math.max(1000, permission.retryAfterMs || 60000), 30000);
+          const retryAfterMs = Math.min(
+            Math.max(1000, Number(permission.retryAfterMs) || 60000),
+            24 * 60 * 60 * 1000,
+          );
+          const deferredDetails = {
+            ...permission,
+            retryAfterMs,
+          };
           recordLifecycle(job, "deferred", {
             reason: permission.reason,
             domain: permission.domain,
             retryAfterMs,
           });
-          recordDeliveryEvent("deferred", job, permission);
+          recordDeliveryEvent("deferred", job, deferredDetails);
           logger("WARN", "mail deferred", {
             jobId: job.id,
             smtpAccount: job.smtpAccount || defaultAccount,
@@ -98,6 +105,23 @@ function createWorker(options) {
             domain: permission.domain,
             retryAfterMs,
           });
+
+          if (typeof queue.defer === "function") {
+            try {
+              await queue.defer(job, retryAfterMs);
+              return;
+            } catch (deferError) {
+              logger("ERROR", "mail defer requeue failed", {
+                jobId: job.id,
+                smtpAccount: job.smtpAccount || defaultAccount,
+                message:
+                  deferError && deferError.message
+                    ? deferError.message
+                    : "Unknown defer requeue error",
+              });
+            }
+          }
+
           await delay(retryAfterMs);
           attempt -= 1;
           continue;

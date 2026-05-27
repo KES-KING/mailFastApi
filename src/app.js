@@ -274,6 +274,7 @@ app.get("/health", async (req, res, next) => {
       uptimeSec: Number(process.uptime().toFixed(2)),
       queueDepth: runtime.queueDepth,
       processingDepth: runtime.processingDepth,
+      delayedDepth: runtime.delayedDepth,
       activeJobs: runtime.activeJobs,
       authMode: runtime.authMode,
       queueBackend: runtime.queueBackend,
@@ -740,6 +741,7 @@ async function collectMonitorSnapshot() {
 async function collectRuntimeMetrics() {
   let queueDepth = null;
   let processingDepth = null;
+  let delayedDepth = null;
   try {
     queueDepth = await queue.getDepth();
   } catch (error) {
@@ -752,10 +754,18 @@ async function collectRuntimeMetrics() {
       processingDepth = null;
     }
   }
+  if (typeof queue.getDelayedDepth === "function") {
+    try {
+      delayedDepth = await queue.getDelayedDepth();
+    } catch (error) {
+      delayedDepth = null;
+    }
+  }
 
   return {
     queueDepth,
     processingDepth,
+    delayedDepth,
     activeJobs: worker.getActiveJobs(),
     authMode: authConfig.mode,
     queueBackend: queue.backend,

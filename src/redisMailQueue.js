@@ -7,9 +7,11 @@ function createRedisMailQueue(options = {}) {
   const queueKey = options.queueKey || "mailfastapi:mail_jobs";
   const processingKey = options.processingKey || `${queueKey}:processing`;
   const leaseKey = options.leaseKey || `${processingKey}:leases`;
+  const delayedKey = options.delayedKey || `${queueKey}:delayed`;
   const commandTimeoutMs = Math.max(1000, toInt(options.commandTimeoutMs, 5000));
   const visibilityTimeoutMs = Math.max(5000, toInt(options.visibilityTimeoutMs, 5 * 60 * 1000));
   const reclaimIntervalMs = Math.max(1000, toInt(options.reclaimIntervalMs, 30 * 1000));
+  const delayedPromotionIntervalMs = Math.min(1000, reclaimIntervalMs);
   const logger = options.logger;
 
   const pushClient = createClient({
@@ -27,6 +29,7 @@ function createRedisMailQueue(options = {}) {
     polling: false,
     waiters: [],
     reclaimTimer: null,
+    delayedTimer: null,
   };
 
   pushClient.on("error", (error) => {
@@ -55,10 +58,12 @@ function createRedisMailQueue(options = {}) {
     emitInfo("redis mail queue started", {
       queueKey,
       processingKey,
+      delayedKey,
       redisUrl,
       visibilityTimeoutMs,
     });
     startReclaimLoop();
+    startDelayedLoop();
   }
 
   async function stop() {
@@ -71,6 +76,10 @@ function createRedisMailQueue(options = {}) {
     if (state.reclaimTimer) {
       clearInterval(state.reclaimTimer);
       state.reclaimTimer = null;
+    }
+    if (state.delayedTimer) {
+      clearInterval(state.delayedTimer);
+      state.delayedTimer = null;
     }
     while (state.waiters.length) {
       const waiter = state.waiters.shift();
@@ -101,6 +110,7 @@ function createRedisMailQueue(options = {}) {
   async function dequeue() {
     while (!state.consumerClosed && !state.closed) {
       try {
+        await promoteDueDelayed();
         const raw = await popClient.brPopLPush(queueKey, processingKey, 1);
         if (!raw) {
           continue;
@@ -145,6 +155,49 @@ function createRedisMailQueue(options = {}) {
     return true;
   }
 
+  async function defer(job, delayMs) {
+    if (state.closed) {
+      const error = new Error("Queue is closed.");
+      error.code = "QUEUE_CLOSED";
+      throw error;
+    }
+
+    const raw = getQueueToken(job);
+    const dueAtMs = Date.now() + Math.max(0, Number(delayMs) || 0);
+    if (!raw) {
+      await pushClient.zAdd(delayedKey, {
+        score: dueAtMs,
+        value: JSON.stringify(job),
+      });
+      return true;
+    }
+
+    const moved = await pushClient.sendCommand([
+      "EVAL",
+      [
+        "if redis.call('LREM', KEYS[1], 1, ARGV[1]) > 0 then",
+        "  redis.call('ZREM', KEYS[2], ARGV[1])",
+        "  redis.call('ZADD', KEYS[3], ARGV[2], ARGV[1])",
+        "  return 1",
+        "end",
+        "return 0",
+      ].join("\n"),
+      "3",
+      processingKey,
+      leaseKey,
+      delayedKey,
+      raw,
+      String(dueAtMs),
+    ]);
+
+    if (Number(moved) !== 1) {
+      const error = new Error("Deferred job was not in processing queue.");
+      error.code = "QUEUE_DEFER_FAILED";
+      throw error;
+    }
+    return true;
+  }
+
   async function ackRaw(raw) {
     await Promise.allSettled([pushClient.lRem(processingKey, 1, raw), pushClient.zRem(leaseKey, raw)]);
     return true;
@@ -185,6 +238,18 @@ function createRedisMailQueue(options = {}) {
     }, reclaimIntervalMs);
     state.reclaimTimer.unref();
     void reclaimExpiredLeases();
+  }
+
+  function startDelayedLoop() {
+    if (state.delayedTimer) {
+      return;
+    }
+
+    state.delayedTimer = setInterval(() => {
+      void promoteDueDelayed();
+    }, delayedPromotionIntervalMs);
+    state.delayedTimer.unref();
+    void promoteDueDelayed();
   }
 
   async function reclaimExpiredLeases() {
@@ -243,13 +308,66 @@ function createRedisMailQueue(options = {}) {
     }
   }
 
+  async function promoteDueDelayed() {
+    if (state.closed) {
+      return;
+    }
+
+    let due = [];
+    try {
+      due = await depthClient.sendCommand([
+        "ZRANGEBYSCORE",
+        delayedKey,
+        "-inf",
+        String(Date.now()),
+        "LIMIT",
+        "0",
+        "100",
+      ]);
+    } catch (error) {
+      emitWarn("redis delayed queue lookup failed", { message: safeError(error) });
+      return;
+    }
+
+    if (!Array.isArray(due) || due.length === 0) {
+      return;
+    }
+
+    for (const raw of due) {
+      try {
+        const moved = await depthClient.sendCommand([
+          "EVAL",
+          [
+            "if redis.call('ZREM', KEYS[1], ARGV[1]) > 0 then",
+            "  redis.call('RPUSH', KEYS[2], ARGV[1])",
+            "  return 1",
+            "end",
+            "return 0",
+          ].join("\n"),
+          "2",
+          delayedKey,
+          queueKey,
+          raw,
+        ]);
+        if (Number(moved) === 1) {
+          emitInfo("redis delayed job promoted", { queueKey, delayedKey });
+        }
+      } catch (error) {
+        emitWarn("redis delayed queue promotion failed", { message: safeError(error) });
+      }
+    }
+  }
+
   async function getDepth() {
     if (state.closed && !depthClient.isOpen) {
         return null;
       }
 
-    const remoteDepth = await depthClient.lLen(queueKey);
-    return Number(remoteDepth || 0);
+    const [remoteDepth, delayedDepth] = await Promise.all([
+      depthClient.lLen(queueKey),
+      depthClient.zCard(delayedKey),
+    ]);
+    return Number(remoteDepth || 0) + Number(delayedDepth || 0);
   }
 
   async function getProcessingDepth() {
@@ -257,6 +375,14 @@ function createRedisMailQueue(options = {}) {
       return null;
     }
     const remoteDepth = await depthClient.lLen(processingKey);
+    return Number(remoteDepth || 0);
+  }
+
+  async function getDelayedDepth() {
+    if (state.closed && !depthClient.isOpen) {
+      return null;
+    }
+    const remoteDepth = await depthClient.zCard(delayedKey);
     return Number(remoteDepth || 0);
   }
 
@@ -287,8 +413,10 @@ function createRedisMailQueue(options = {}) {
     dequeue,
     ack,
     touch,
+    defer,
     getDepth,
     getProcessingDepth,
+    getDelayedDepth,
     close: () => {
       state.consumerClosed = true;
       while (state.waiters.length) {

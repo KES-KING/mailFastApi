@@ -54,6 +54,7 @@ function createMonitor(options = {}) {
       runtime: {
         queueDepth: numberOrNull(runtime.queueDepth),
         processingDepth: numberOrNull(runtime.processingDepth),
+        delayedDepth: numberOrNull(runtime.delayedDepth),
         activeJobs: numberOrNull(runtime.activeJobs),
         authMode: runtime.authMode || null,
         queueBackend: runtime.queueBackend || null,
@@ -87,6 +88,7 @@ function createMonitor(options = {}) {
     const uptimeSec = round3((Date.now() - startedAtMs) / 1000);
     const queueDepth = numberOrZero(runtime.queueDepth);
     const processingDepth = numberOrZero(runtime.processingDepth);
+    const delayedDepth = numberOrZero(runtime.delayedDepth);
     const activeJobs = numberOrZero(runtime.activeJobs);
     const deliveryEvents =
       runtime.deliveryEvents && typeof runtime.deliveryEvents === "object" ? runtime.deliveryEvents : {};
@@ -103,6 +105,10 @@ function createMonitor(options = {}) {
       "# HELP mailfastapi_queue_processing_depth Current processing queue depth.",
       "# TYPE mailfastapi_queue_processing_depth gauge",
       `mailfastapi_queue_processing_depth ${processingDepth}`,
+      "",
+      "# HELP mailfastapi_queue_delayed_depth Current delayed/deferred queue depth.",
+      "# TYPE mailfastapi_queue_delayed_depth gauge",
+      `mailfastapi_queue_delayed_depth ${delayedDepth}`,
       "",
       "# HELP mailfastapi_active_jobs Current active worker jobs.",
       "# TYPE mailfastapi_active_jobs gauge",
@@ -1123,6 +1129,7 @@ function renderMonitorPageHtml(options = {}) {
             <div class="runtime-row"><span class="label">API Port</span><span id="apiPort" class="value">-</span></div>
             <div class="runtime-row"><span class="label">Monitor Port</span><span id="monitorPort" class="value">-</span></div>
             <div class="runtime-row"><span class="label">Processing</span><span id="processingDepth" class="value">0</span></div>
+            <div class="runtime-row"><span class="label">Delayed</span><span id="delayedDepth" class="value warn">0</span></div>
             <div class="runtime-row"><span class="label">Token Issued</span><span id="tokenIssued" class="value">0</span></div>
             <div class="runtime-row"><span class="label">Retries</span><span id="mailRetry" class="value warn">0</span></div>
             <div class="runtime-row"><span class="label">Total Logs</span><span id="logsTotal" class="value">0</span></div>
@@ -1331,6 +1338,7 @@ function renderMonitorPageHtml(options = {}) {
       apiPort: document.getElementById("apiPort"),
       monitorPort: document.getElementById("monitorPort"),
       processingDepth: document.getElementById("processingDepth"),
+      delayedDepth: document.getElementById("delayedDepth"),
       tokenIssued: document.getElementById("tokenIssued"),
       mailRetry: document.getElementById("mailRetry"),
       logsTotal: document.getElementById("logsTotal"),
@@ -1509,6 +1517,7 @@ function renderMonitorPageHtml(options = {}) {
         r.monitorPort === null || r.monitorPort === undefined ? r.port : r.monitorPort,
       );
       ids.processingDepth.textContent = n(r.processingDepth);
+      ids.delayedDepth.textContent = n(r.delayedDepth);
       ids.tokenIssued.textContent = n(t.authTokenIssuedTotal);
       ids.mailRetry.textContent = n(t.mailRetryTotal);
       ids.logsTotal.textContent = n(t.logsTotal);

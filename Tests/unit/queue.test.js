@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { describe, test } = require("node:test");
 
 const { InMemoryQueue } = require("../../src/queue");
+const { createMemoryMailQueue } = require("../../src/memoryMailQueue");
 
 describe("queue module", () => {
   test("keeps FIFO order", async () => {
@@ -39,5 +40,18 @@ describe("queue module", () => {
     queue.close();
     const item = await queue.dequeue();
     assert.equal(item, null);
+  });
+
+  test("memory mail queue exposes delayed deferred jobs in depth", async () => {
+    const queue = createMemoryMailQueue({ maxSize: 10 });
+
+    await queue.defer({ id: "later" }, 10);
+    assert.equal(await queue.getDepth(), 1);
+    assert.equal(await queue.getDelayedDepth(), 1);
+
+    const item = await queue.dequeue();
+    assert.equal(item.id, "later");
+    assert.equal(await queue.getDelayedDepth(), 0);
+    queue.close();
   });
 });

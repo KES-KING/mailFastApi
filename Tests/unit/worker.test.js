@@ -115,9 +115,59 @@ describe("worker delivery lifecycle", () => {
     assert.ok(lifecycle.includes("bounced"));
     assert.deepEqual(acked, ["job-3"]);
   });
+
+  test("requeues policy-deferred jobs without holding worker slots", async () => {
+    const deferred = [];
+    const sent = [];
+    const queue = createSingleJobQueue(
+      {
+        id: "job-4",
+        tenantId: "tenant_a",
+        smtpAccount: "default",
+        to: "user@example.com",
+        subject: "Hello",
+        html: "<p>Hello</p>",
+        queuedAt: Date.now(),
+      },
+      [],
+      {
+        defer: async (job, delayMs) => {
+          deferred.push({ jobId: job.id, delayMs });
+          return true;
+        },
+      },
+    );
+    const worker = createWorker({
+      queue,
+      transporter: {
+        sendMail: async () => {
+          sent.push(true);
+          return { messageId: "message-4" };
+        },
+      },
+      deliveryPolicy: {
+        checkSendPermission: () => ({
+          allowed: false,
+          reason: "minute_quota_exceeded",
+          domain: "example.com",
+          retryAfterMs: 60000,
+        }),
+        getMaxRetryAttempts: (_job, fallback) => fallback,
+      },
+      concurrency: 1,
+      retryAttempts: 1,
+      logger: () => {},
+    });
+
+    worker.start();
+    await worker.stop({ drainTimeoutMs: 1000 });
+
+    assert.deepEqual(deferred, [{ jobId: "job-4", delayMs: 60000 }]);
+    assert.deepEqual(sent, []);
+  });
 });
 
-function createSingleJobQueue(job, acked) {
+function createSingleJobQueue(job, acked, overrides = {}) {
   let delivered = false;
   let closed = false;
   return {
@@ -138,6 +188,7 @@ function createSingleJobQueue(job, acked) {
     async touch() {
       return true;
     },
+    ...overrides,
     close() {
       closed = true;
     },

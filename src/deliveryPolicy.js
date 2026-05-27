@@ -47,6 +47,8 @@ const DEFAULT_POLICIES = Object.freeze({
   },
 });
 
+const SMTP_ATTEMPT_EVENTS = Object.freeze(["sent", "failed", "bounced", "retrying"]);
+
 function createDeliveryPolicy(options = {}) {
   const env = options.env || process.env;
   const store = options.store || null;
@@ -85,7 +87,7 @@ function createDeliveryPolicy(options = {}) {
           tenantId,
           smtpAccount,
           domain,
-          events: ["queued", "sent", "deferred"],
+          events: SMTP_ATTEMPT_EVENTS,
           sinceMs,
         });
         if (count >= Number(limit)) {
