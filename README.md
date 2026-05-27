@@ -33,7 +33,7 @@ Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/st
 - SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT domain health diagnostics on the monitor API
 - Cached Nodemailer pooled transporters per SMTP account
 - Encrypted SMTP account vault (`data/mailfastapi-secure.sqlite`) protected by `SECURE_STORE_KEY`
-- First-run web panel password + TOTP MFA setup, session cookies, CSRF protection, and login lockout
+- First-run web panel password setup, optional TOTP MFA, session cookies, CSRF protection, and login lockout
 - Optional per-mail `smtpAccount`/`from`, multi-recipient `to`, and base64 attachments
 - Worker retry logic and latency metrics (`queueLatencyMs`, `dispatchLatencyMs`)
 - JWT auth (`/auth/token` + Bearer on `/send`) and rate limiting
@@ -116,7 +116,8 @@ Important variables:
 - Web service:
   - fixed legacy panel port: `8080`
   - `WEB_HOST`, `WEB_CORE_BASE_URL`
-  - `WEB_MFA_REQUIRED`, `WEB_SESSION_IDLE_TIMEOUT_MS`, `WEB_SESSION_ABSOLUTE_TIMEOUT_MS`
+  - `WEB_MFA_REQUIRED=false` for development, `true` is required in production mode
+  - `WEB_SESSION_IDLE_TIMEOUT_MS`, `WEB_SESSION_ABSOLUTE_TIMEOUT_MS`
   - `WEB_ENABLE_UPDATER`, `WEB_UPDATE_SCRIPT`, `WEB_UPDATE_TIMEOUT_MS`
   - `WEB_UPDATE_TOKEN` (optional `x-update-token` header protection for update endpoints)
 - Updater:

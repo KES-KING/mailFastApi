@@ -23,6 +23,7 @@ function createWebAuth(options) {
   if (!secureStore || typeof secureStore.verifyAdminPassword !== "function") {
     throw new Error("A secure store is required for web auth.");
   }
+  const mfaRequired = options.mfaRequired !== false;
 
   const sessions = new Map();
   const formTokens = new Map();
@@ -207,6 +208,7 @@ function createWebAuth(options) {
 
   function isMfaEnabled() {
     return (
+      mfaRequired &&
       typeof secureStore.hasAdminTotp === "function" &&
       secureStore.hasAdminTotp() === true &&
       typeof secureStore.verifyAdminMfaCode === "function"

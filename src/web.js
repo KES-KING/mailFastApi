@@ -21,6 +21,10 @@ const APP_ROOT = path.resolve(__dirname, "..");
 const CORE_PORT = toInt(process.env.PORT, 3000);
 const WEB_PORT = 8080;
 const WEB_HOST = String(process.env.WEB_HOST || "").trim();
+const WEB_MFA_REQUIRED = toBoolean(
+  process.env.WEB_MFA_REQUIRED,
+  toBoolean(process.env.PRODUCTION_MODE, false),
+);
 const WEB_SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.WEB_SHUTDOWN_TIMEOUT_MS, 12000));
 
 const CORE_MONITOR_PATH = normalizePath(process.env.MONITOR_PATH || "/monitor");
@@ -64,7 +68,7 @@ app.disable("x-powered-by");
 app.use(express.json({ limit: "256kb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
-const webAuth = createWebAuth({ secureStore });
+const webAuth = createWebAuth({ secureStore, mfaRequired: WEB_MFA_REQUIRED });
 const updateAuth = createUpdateAuthMiddleware(WEB_UPDATE_TOKEN);
 let updateJob = createIdleUpdateJob();
 app.use(webAuth.securityHeaders);
@@ -84,7 +88,7 @@ app.get("/health", async (req, res) => {
 
 app.get("/setup", (req, res) => {
   if (secureStore.hasAdminPassword()) {
-    return res.redirect(302, secureStore.hasAdminTotp() ? "/login" : "/mfa/setup");
+    return res.redirect(302, shouldRequireMfaSetup() ? "/mfa/setup" : "/login");
   }
   const formToken = webAuth.createFormToken(req, res);
   return res.status(200).type("html").send(
@@ -100,7 +104,7 @@ app.get("/setup", (req, res) => {
 
 app.post("/setup", (req, res) => {
   if (secureStore.hasAdminPassword()) {
-    return res.redirect(302, secureStore.hasAdminTotp() ? "/login" : "/mfa/setup");
+    return res.redirect(302, shouldRequireMfaSetup() ? "/mfa/setup" : "/login");
   }
   if (!webAuth.verifyFormToken(req, req.body || {})) {
     return res.redirect(302, "/setup?error=Invalid%20form%20token");
@@ -114,6 +118,11 @@ app.post("/setup", (req, res) => {
 
   try {
     secureStore.setAdminPassword(password);
+    if (!WEB_MFA_REQUIRED) {
+      webAuth.login(req, res, password);
+      return res.redirect(302, "/smtp");
+    }
+
     const enrollment = secureStore.beginAdminTotpEnrollment();
     const formToken = webAuth.createFormToken(req, res);
     return res.status(200).type("html").send(
@@ -130,6 +139,9 @@ app.post("/setup", (req, res) => {
 });
 
 app.get("/mfa/setup", (req, res) => {
+  if (!WEB_MFA_REQUIRED) {
+    return res.redirect(302, "/login");
+  }
   if (!secureStore.hasAdminPassword()) {
     return res.redirect(302, "/setup");
   }
@@ -152,6 +164,9 @@ app.get("/mfa/setup", (req, res) => {
 });
 
 app.post("/mfa/setup", (req, res) => {
+  if (!WEB_MFA_REQUIRED) {
+    return res.redirect(302, "/login");
+  }
   if (!secureStore.hasAdminPassword()) {
     return res.redirect(302, "/setup");
   }
@@ -187,7 +202,7 @@ app.get("/login", (req, res) => {
   if (!secureStore.hasAdminPassword()) {
     return res.redirect(302, "/setup");
   }
-  if (!secureStore.hasAdminTotp()) {
+  if (shouldRequireMfaSetup()) {
     return res.redirect(302, "/mfa/setup");
   }
   const formToken = webAuth.createFormToken(req, res);
@@ -196,7 +211,7 @@ app.get("/login", (req, res) => {
       mode: "login",
       action: "/login",
       formToken,
-      mfaRequired: true,
+      mfaRequired: WEB_MFA_REQUIRED && secureStore.hasAdminTotp(),
       error: req.query && req.query.error ? String(req.query.error) : "",
       cspNonce: getCspNonce(res),
     }),
@@ -207,7 +222,7 @@ app.post("/login", (req, res) => {
   if (!secureStore.hasAdminPassword()) {
     return res.redirect(302, "/setup");
   }
-  if (!secureStore.hasAdminTotp()) {
+  if (shouldRequireMfaSetup()) {
     return res.redirect(302, "/mfa/setup");
   }
   if (!webAuth.verifyFormToken(req, req.body || {})) {
@@ -602,6 +617,10 @@ async function gracefulShutdown(signal) {
   }
 }
 
+function shouldRequireMfaSetup() {
+  return WEB_MFA_REQUIRED && !secureStore.hasAdminTotp();
+}
+
 function renderAuthPageHtml(options = {}) {
   const mode = options.mode === "setup" ? "setup" : "login";
   const isSetup = mode === "setup";
@@ -673,7 +692,13 @@ function renderAuthPageHtml(options = {}) {
 <body>
   <main>
     <h1>${escapeHtml(title)}</h1>
-    <p>${isSetup ? "First secure setup. Create the web panel password." : "Enter the web panel password and MFA code."}</p>
+    <p>${
+      isSetup
+        ? "First secure setup. Create the web panel password."
+        : mfaRequired
+          ? "Enter the web panel password and MFA code."
+          : "Enter the web panel password."
+    }</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
     <form method="post" action="${action}" autocomplete="off">
       <input type="hidden" name="_csrf" value="${formToken}" />

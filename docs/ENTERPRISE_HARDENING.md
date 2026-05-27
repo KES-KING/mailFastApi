@@ -56,7 +56,7 @@ Encrypted SQLite vault
 | One-click unsubscribe | RFC style unsubscribe headers | `List-Unsubscribe`, `List-Unsubscribe-Post` |
 | Audit | Hash-chained append-only event records | `audit_events` |
 | RBAC | Web role middleware for admin/operator/viewer/smtp-manager | `src/webAuth.js` |
-| TOTP MFA | First-run local MFA enrollment and login verification | `src/totp.js`, `src/secureStore.js`, `src/web.js` |
+| TOTP MFA | First-run local MFA enrollment and login verification when `WEB_MFA_REQUIRED=true` | `src/totp.js`, `src/secureStore.js`, `src/web.js` |
 | CSP | Web panel uses per-response nonce CSP | `src/webAuth.js` |
 | DKIM signing | Nodemailer DKIM options from env/file config | `src/dkimConfig.js` |
 | Domain health | SPF, DKIM, DMARC, MX, MTA-STS, TLS-RPT DNS checks | `/domain-health/:domain` |
@@ -155,7 +155,7 @@ Baseline controls:
 - Production fail-fast guard.
 - Rate limiting on API and token endpoints.
 - Secure web-panel password store in encrypted SQLite.
-- CSRF protection, local TOTP MFA, idle timeout, absolute timeout, session revoke, IP-bound cookies, and RBAC middleware.
+- CSRF protection, configurable local TOTP MFA, idle timeout, absolute timeout, session revoke, IP-bound cookies, and RBAC middleware.
 - Nonce-based CSP for web-panel inline scripts/styles; no `unsafe-inline` fallback.
 - Monitor token requirement in production.
 - Hash-chained audit events for critical operational state.
@@ -165,7 +165,7 @@ Production deployment controls:
 - Place admin panel behind VPN, private network, IP allowlist, or zero-trust gateway.
 - Terminate TLS at a reverse proxy with HSTS.
 - Use CSP nonce/hash policy on web panel pages before public exposure.
-- Local TOTP MFA is enforced for web-panel login; use an identity provider or WebAuthn/FIDO2 for phishing-resistant deployments.
+- Local TOTP MFA is disabled in the dev `.env` example but enforced by production guard; use an identity provider or WebAuthn/FIDO2 for phishing-resistant deployments.
 - Keep update endpoints disabled or restricted to approved operators.
 
 ## Secret Management Architecture

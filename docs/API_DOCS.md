@@ -208,8 +208,9 @@ Hard bounces and complaints automatically create tenant-level suppression entrie
 The separate web panel service listens on fixed port `8080`.
 
 - First access redirects to `GET /setup` and requires creating the web panel password.
-- `GET /mfa/setup` and `POST /mfa/setup` enroll local TOTP MFA before the first panel session is created.
-- After setup, unauthenticated users are redirected to `GET /login` and must submit password + TOTP/recovery code.
+- When `WEB_MFA_REQUIRED=true`, `GET /mfa/setup` and `POST /mfa/setup` enroll local TOTP MFA before the first panel session is created.
+- When `WEB_MFA_REQUIRED=false`, dev login uses the web panel password only.
+- After setup, unauthenticated users are redirected to `GET /login`; production mode must use password + TOTP/recovery code.
 - `GET /` -> live monitor UI at the root URL
 - `GET /smtp` -> encrypted SMTP account management
 - `POST /smtp/accounts` -> create/update an SMTP account

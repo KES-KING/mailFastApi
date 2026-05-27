@@ -89,6 +89,29 @@ describe("web auth security headers", () => {
     assert.equal(session.csrfToken.length > 10, true);
     assert.match(String(res.headers.get("set-cookie")), /mailfastapi_session=/);
   });
+
+  test("skips MFA check when MFA is disabled for development", () => {
+    const webAuth = createWebAuth({
+      mfaRequired: false,
+      secureStore: {
+        verifyAdminPassword: (password) => password === "correct-password",
+        hasAdminPassword: () => true,
+        hasAdminTotp: () => true,
+        verifyAdminMfaCode: () => false,
+      },
+    });
+    const req = {
+      headers: {},
+      ip: "127.0.0.1",
+      socket: { remoteAddress: "127.0.0.1" },
+    };
+    const res = createResponse();
+
+    const session = webAuth.login(req, res, "correct-password");
+
+    assert.equal(session.csrfToken.length > 10, true);
+    assert.equal(webAuth.isMfaEnabled(), false);
+  });
 });
 
 function createResponse() {
