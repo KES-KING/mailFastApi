@@ -54,8 +54,6 @@ function createOperationalStore(options = {}) {
       created_at_ms INTEGER NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS idx_dead_letter_requeued ON dead_letter_jobs(requeued_at_ms, created_at_ms);
-
     CREATE TABLE IF NOT EXISTS audit_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       previous_hash TEXT NOT NULL,
