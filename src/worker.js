@@ -13,6 +13,7 @@ function createWorker(options) {
     concurrency = 2,
     retryAttempts = 3,
     retryDelayMs = 250,
+    deadLetterSink,
     logger = defaultLogger,
   } = options;
 
@@ -47,6 +48,11 @@ function createWorker(options) {
       activeJobs += 1;
       try {
         await processJob(job);
+      } catch (error) {
+        logger("ERROR", "worker job crashed", {
+          jobId: job && job.id ? job.id : undefined,
+          message: error && error.message ? error.message : "Unknown worker error",
+        });
       } finally {
         activeJobs -= 1;
       }
@@ -62,6 +68,7 @@ function createWorker(options) {
       const sendStart = Date.now();
 
       try {
+        await touchJob(job);
         const smtpAccount = job.smtpAccount || defaultAccount;
         const selectedTransporter =
           typeof getTransporter === "function" ? getTransporter(smtpAccount) : transporter;
@@ -79,6 +86,13 @@ function createWorker(options) {
         };
         if (typeof job.text === "string" && job.text.trim() !== "") {
           mailOptions.text = job.text;
+        }
+
+        if (job.unsubscribeUrl) {
+          mailOptions.headers = {
+            "List-Unsubscribe": `<${job.unsubscribeUrl}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          };
         }
 
         const attachments = normalizeAttachments(job.attachments);
@@ -100,11 +114,23 @@ function createWorker(options) {
           dispatchLatencyMs: Date.now() - sendStart,
         });
 
+        await ackJob(job);
         return;
       } catch (error) {
         const isLastAttempt = attempt >= maxAttempts;
 
         if (isLastAttempt) {
+          if (typeof deadLetterSink === "function") {
+            try {
+              await Promise.resolve(deadLetterSink(job, error));
+            } catch (sinkError) {
+              logger("ERROR", "dead letter sink failed", {
+                jobId: job.id,
+                message: sinkError && sinkError.message ? sinkError.message : "Unknown sink error",
+              });
+            }
+          }
+
           logger("ERROR", "mail failed", {
             jobId: job.id,
             smtpAccount: job.smtpAccount || defaultAccount,
@@ -112,20 +138,43 @@ function createWorker(options) {
             attempt,
             message: error && error.message ? error.message : "Unknown SMTP error",
           });
+          await ackJob(job);
           return;
         }
 
+        const nextAttemptInMs = calculateRetryDelay(attempt);
         logger("WARN", "mail send failed, retrying", {
           jobId: job.id,
           smtpAccount: job.smtpAccount || defaultAccount,
           to: job.to,
           attempt,
-          nextAttemptInMs: baseRetryDelay * attempt,
+          nextAttemptInMs,
           message: error && error.message ? error.message : "Unknown SMTP error",
         });
 
-        await delay(baseRetryDelay * attempt);
+        await delay(nextAttemptInMs);
       }
+    }
+  }
+
+  function calculateRetryDelay(attempt) {
+    if (baseRetryDelay <= 0) {
+      return 0;
+    }
+    const exponentialDelay = baseRetryDelay * 2 ** Math.max(0, attempt - 1);
+    const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(baseRetryDelay / 2)));
+    return exponentialDelay + jitter;
+  }
+
+  async function ackJob(job) {
+    if (queue && typeof queue.ack === "function") {
+      await queue.ack(job);
+    }
+  }
+
+  async function touchJob(job) {
+    if (queue && typeof queue.touch === "function") {
+      await queue.touch(job);
     }
   }
 

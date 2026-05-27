@@ -93,6 +93,7 @@ app.get("/setup", (req, res) => {
       action: "/setup",
       formToken,
       error: req.query && req.query.error ? String(req.query.error) : "",
+      cspNonce: getCspNonce(res),
     }),
   );
 });
@@ -131,6 +132,7 @@ app.get("/login", (req, res) => {
       action: "/login",
       formToken,
       error: req.query && req.query.error ? String(req.query.error) : "",
+      cspNonce: getCspNonce(res),
     }),
   );
 });
@@ -190,6 +192,7 @@ app.get(MONITOR_PATH, webAuth.requireAuth, (req, res) => {
     updateCheckPath: `${MONITOR_UPDATE_CHECK_PATH}${tokenSuffix}`,
     updateApplyPath: `${MONITOR_UPDATE_APPLY_PATH}${tokenSuffix}`,
     csrfToken: webAuth.getCsrfToken(req),
+    cspNonce: getCspNonce(res),
     logoutPath: "/logout",
     smtpSettingsPath: "/smtp",
   });
@@ -206,6 +209,7 @@ app.get("/smtp", webAuth.requireAuth, (req, res) => {
       csrfToken: webAuth.getCsrfToken(req),
       status,
       error,
+      cspNonce: getCspNonce(res),
     }),
   );
 });
@@ -220,6 +224,7 @@ app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, (req, res) => {
       monitorPath: MONITOR_PATH,
       smtpSettingsPath: "/smtp",
       logoutPath: "/logout",
+      cspNonce: getCspNonce(res),
     }),
   );
 });
@@ -258,6 +263,7 @@ app.get(MONITOR_METRICS_VIEW_PATH, webAuth.requireAuth, (req, res) => {
     metricsPath: `${METRICS_PATH}${tokenSuffix}`,
     monitorPath: `${MONITOR_PATH}${tokenSuffix}`,
     rawViewPath: `${MONITOR_RAW_VIEW_PATH}${tokenSuffix}`,
+    cspNonce: getCspNonce(res),
   });
   res.status(200).type("html").send(html);
 });
@@ -269,6 +275,7 @@ app.get(MONITOR_RAW_VIEW_PATH, webAuth.requireAuth, (req, res) => {
     statsPath: `${MONITOR_STATS_PATH}${tokenSuffix}`,
     monitorPath: `${MONITOR_PATH}${tokenSuffix}`,
     metricsViewPath: `${MONITOR_METRICS_VIEW_PATH}${tokenSuffix}`,
+    cspNonce: getCspNonce(res),
   });
   res.status(200).type("html").send(html);
 });
@@ -526,6 +533,7 @@ function renderAuthPageHtml(options = {}) {
   const action = escapeHtml(options.action || (isSetup ? "/setup" : "/login"));
   const formToken = escapeHtml(options.formToken || "");
   const error = String(options.error || "").trim();
+  const nonceAttr = formatNonceAttr(options.cspNonce);
 
   return `<!doctype html>
 <html lang="en">
@@ -533,7 +541,7 @@ function renderAuthPageHtml(options = {}) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
-  <style>
+  <style${nonceAttr}>
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -610,6 +618,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
   const csrfToken = escapeHtml(options.csrfToken || "");
   const status = String(options.status || "").trim();
   const error = String(options.error || "").trim();
+  const nonceAttr = formatNonceAttr(options.cspNonce);
   const rows = accounts.length
     ? accounts
         .map(
@@ -625,7 +634,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
                 <input type="hidden" name="name" value="${escapeHtml(account.name)}" />
                 <button type="submit"${account.isDefault ? " disabled" : ""}>Default</button>
               </form>
-              <form method="post" action="/smtp/accounts/delete" onsubmit="return confirm('Delete SMTP account?');">
+              <form method="post" action="/smtp/accounts/delete" data-confirm="Delete SMTP account?">
                 <input type="hidden" name="_csrf" value="${csrfToken}" />
                 <input type="hidden" name="name" value="${escapeHtml(account.name)}" />
                 <button type="submit">Delete</button>
@@ -642,7 +651,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SMTP Accounts</title>
-  <style>
+  <style${nonceAttr}>
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -764,6 +773,15 @@ function renderSmtpSettingsPageHtml(options = {}) {
       </table>
     </div>
   </section>
+  <script${nonceAttr}>
+    for (const form of document.querySelectorAll("[data-confirm]")) {
+      form.addEventListener("submit", (event) => {
+        if (!window.confirm(form.getAttribute("data-confirm") || "Continue?")) {
+          event.preventDefault();
+        }
+      });
+    }
+  </script>
 </body>
 </html>`;
 }
@@ -776,6 +794,7 @@ function renderUpdatePageHtml(options = {}) {
   const monitorPath = escapeHtml(options.monitorPath || MONITOR_PATH);
   const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
   const logoutPath = escapeHtml(options.logoutPath || "/logout");
+  const nonceAttr = formatNonceAttr(options.cspNonce);
 
   return `<!doctype html>
 <html lang="en">
@@ -783,7 +802,7 @@ function renderUpdatePageHtml(options = {}) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Update Control</title>
-  <style>
+  <style${nonceAttr}>
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -815,6 +834,8 @@ function renderUpdatePageHtml(options = {}) {
     }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .inline-form { margin: 0; }
+    .nav-spaced { margin-top: 12px; }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -838,9 +859,17 @@ function renderUpdatePageHtml(options = {}) {
       margin: 12px 0 8px;
     }
     .progress-bar {
+      appearance: none;
+      border: 0;
       height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #2166ad, #22c55e);
+      width: 100%;
+      display: block;
+      background: #fff;
+    }
+    .progress-bar::-webkit-progress-bar { background: #fff; }
+    .progress-bar::-webkit-progress-value { background: #2166ad; }
+    .progress-bar::-moz-progress-bar {
+      background: #2166ad;
       transition: width 280ms ease;
     }
     .progress-meta {
@@ -904,7 +933,7 @@ function renderUpdatePageHtml(options = {}) {
     <div class="nav">
       <a href="${monitorPath}">Monitor</a>
       <a href="${smtpSettingsPath}">SMTP Accounts</a>
-      <form method="post" action="${logoutPath}" style="margin:0;">
+      <form method="post" action="${logoutPath}" class="inline-form">
         <input type="hidden" name="_csrf" value="${csrfToken}" />
         <button type="submit">Logout</button>
       </form>
@@ -914,7 +943,7 @@ function renderUpdatePageHtml(options = {}) {
   <section class="panel">
     <h2>Update Status</h2>
     <div class="progress-shell" aria-label="Update progress">
-      <div id="progressBar" class="progress-bar"></div>
+      <progress id="progressBar" class="progress-bar" max="100" value="0"></progress>
     </div>
     <div class="progress-meta">
       <span id="progressLabel">Hazir</span>
@@ -927,7 +956,7 @@ function renderUpdatePageHtml(options = {}) {
       <div class="cell"><div class="k">Commit</div><div id="commit" class="v">-</div></div>
       <div class="cell"><div class="k">Restart</div><div id="restart" class="v">-</div></div>
     </div>
-    <div class="nav" style="margin-top:12px;">
+    <div class="nav nav-spaced">
       <button id="checkBtn" type="button">Tekrar Denetle</button>
       <button id="startBtn" type="button" disabled>Guncellemeyi Baslat</button>
     </div>
@@ -938,7 +967,7 @@ function renderUpdatePageHtml(options = {}) {
     <ul id="steps" class="steps"><li class="empty">Henuz islem yok.</li></ul>
   </section>
 
-  <script>
+  <script${nonceAttr}>
     const updateCheckPath = "${checkPath}";
     const updateStartPath = "${startPath}";
     const updateStatusPath = "${statusPath}";
@@ -1125,7 +1154,7 @@ function renderUpdatePageHtml(options = {}) {
 
     function setProgress(percent, label) {
       const value = clamp(Number(percent || 0), 0, 100);
-      ids.progressBar.style.width = value + "%";
+      ids.progressBar.value = value;
       ids.progressPercent.textContent = Math.round(value) + "%";
       ids.progressLabel.textContent = label || "-";
     }
@@ -1178,6 +1207,15 @@ function parseSmtpAccountForm(body) {
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : "Unknown error";
+}
+
+function getCspNonce(res) {
+  return res && res.locals ? res.locals.cspNonce || "" : "";
+}
+
+function formatNonceAttr(value) {
+  const nonce = escapeHtml(value || "");
+  return nonce ? ` nonce="${nonce}"` : "";
 }
 
 async function checkCoreHealth() {

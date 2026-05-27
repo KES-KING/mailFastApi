@@ -4,8 +4,8 @@ High-performance Node.js email microservice with split core/web architecture.
 
 Core design:
 
-- Incoming email requests are written to Redis queue immediately.
-- Worker processes consume Redis jobs and deliver via pooled SMTP accounts.
+- Incoming email requests are validated, checked for idempotency/suppression, and written to Redis queue immediately.
+- Worker processes consume leased Redis jobs and deliver via pooled SMTP accounts.
 - System logs are persisted to SQLite and file logs simultaneously.
 - Monitor web panel is served by a separate web service.
 - SMTP credentials and web admin password verifier are stored in an encrypted SQLite vault.
@@ -22,7 +22,12 @@ Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/st
 ## Key Features
 
 - Fast ACK pattern (`202 queued`) without waiting SMTP round-trip
-- Redis-backed mail queue (`QUEUE_BACKEND=redis`)
+- Redis-backed mail queue (`QUEUE_BACKEND=redis`) with processing leases, visibility timeout, and ack
+- API/worker role split with `MAILFASTAPI_ROLE=api|worker|all`
+- Production safety guard with `PRODUCTION_MODE=true`
+- Idempotency records, suppression list, dead-letter jobs, and hash-chained audit events in operational SQLite
+- One-click unsubscribe support for marketing/bulk mail
+- SPF/DKIM/DMARC domain health diagnostics on the monitor API
 - Cached Nodemailer pooled transporters per SMTP account
 - Encrypted SMTP account vault (`data/mailfastapi-secure.sqlite`) protected by `SECURE_STORE_KEY`
 - First-run web panel password setup, session cookies, CSRF protection, and login lockout
@@ -50,6 +55,9 @@ mailFastApi/
 |   |-- memoryMailQueue.js
 |   |-- redisMailQueue.js
 |   |-- mailer.js
+|   |-- operationalStore.js
+|   |-- productionGuard.js
+|   |-- domainHealth.js
 |   |-- secureStore.js
 |   |-- webAuth.js
 |   |-- queue.js
@@ -77,8 +85,14 @@ Important variables:
   - `QUEUE_BACKEND=redis`
   - `REDIS_URL=redis://127.0.0.1:6379`
   - `REDIS_QUEUE_KEY=mailfastapi:mail_jobs`
+  - `QUEUE_VISIBILITY_TIMEOUT_MS=300000`
+  - `QUEUE_RECLAIM_INTERVAL_MS=30000`
+- Runtime role:
+  - `PRODUCTION_MODE=false|true`
+  - `MAILFASTAPI_ROLE=all|api|worker`
 - Logs:
   - `LOG_DB_PATH=data/mailfastapi.sqlite`
+  - `OPERATIONAL_DB_PATH=data/mailfastapi-operational.sqlite`
   - `LOG_DIR=logs`
   - `LOG_FILE_NAME=system.log`
 - Secure store:
@@ -101,6 +115,11 @@ Important variables:
   - `UPDATER_RELEASE_MODE=branch|tag`
   - `UPDATER_ALLOWED_TAG_PATTERN` and `UPDATER_REQUIRE_SIGNED_TAG`
   - `UPDATER_NPM_BIN`, `UPDATER_RUN_TESTS`, `UPDATER_HEALTH_TIMEOUT_MS`, `UPDATER_LOCK_STALE_MS`
+- Delivery safety:
+  - `IDEMPOTENCY_ENABLED`, `IDEMPOTENCY_HEADER`, `IDEMPOTENCY_TTL_MS`
+  - `SUPPRESSION_ENABLED`, `SUPPRESSION_APPLIES_TO`
+  - `PUBLIC_BASE_URL`, `UNSUBSCRIBE_SECRET`
+  - `DOMAIN_HEALTH_DKIM_SELECTORS`
 
 ## Run
 
@@ -223,6 +242,13 @@ Real SMTP test:
 npm test mailsend
 ```
 
+Load test templates:
+
+```bash
+k6 run Tests/load/k6-send.js
+ACCESS_TOKEN=<JWT_TOKEN> npm run test:load:autocannon
+```
+
 ## Log Dashboard
 
 After traffic exists, render CLI dashboard:
@@ -244,6 +270,7 @@ Dashboard includes:
 Endpoint details are in:
 
 - [docs/API_DOCS.md](./docs/API_DOCS.md)
+- [docs/ENTERPRISE_HARDENING.md](./docs/ENTERPRISE_HARDENING.md)
 
 Multi-account send example, after adding the account in the web panel:
 

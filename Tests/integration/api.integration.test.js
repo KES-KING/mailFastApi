@@ -119,6 +119,100 @@ describe("API integration", () => {
     assert.deepEqual(body, { status: "queued" });
   });
 
+  test("POST /send replays matching idempotency keys", async () => {
+    const tokenBody = await getToken(baseUrl);
+    const requestBody = {
+      to: "idempotent@example.com",
+      subject: "Queued Once",
+      html: "<h1>Hello</h1>",
+      category: "transactional",
+    };
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${tokenBody.access_token}`,
+      "idempotency-key": `idem-${Date.now()}`,
+    };
+
+    const first = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    assert.equal(first.status, 202);
+    assert.deepEqual(await first.json(), { status: "queued" });
+
+    const replay = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    assert.equal(replay.status, 202);
+    assert.equal(replay.headers.get("x-idempotent-replay"), "true");
+    assert.deepEqual(await replay.json(), { status: "queued" });
+  });
+
+  test("POST /send rejects reused idempotency keys with different payloads", async () => {
+    const tokenBody = await getToken(baseUrl);
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${tokenBody.access_token}`,
+      "idempotency-key": `idem-conflict-${Date.now()}`,
+    };
+
+    const first = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        to: "conflict@example.com",
+        subject: "Queued Once",
+        html: "<h1>Hello</h1>",
+      }),
+    });
+    assert.equal(first.status, 202);
+
+    const conflict = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        to: "conflict@example.com",
+        subject: "Different Subject",
+        html: "<h1>Hello</h1>",
+      }),
+    });
+    assert.equal(conflict.status, 409);
+  });
+
+  test("POST /send rejects invalid tenant and oversized idempotency headers", async () => {
+    const tokenBody = await getToken(baseUrl);
+    const payload = {
+      to: "user@example.com",
+      subject: "Invalid Headers",
+      html: "<h1>Hello</h1>",
+    };
+
+    const invalidTenant = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+        "x-tenant-id": "bad tenant!",
+      },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(invalidTenant.status, 400);
+
+    const oversizedIdempotencyKey = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+        "idempotency-key": "x".repeat(257),
+      },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(oversizedIdempotencyKey.status, 400);
+  });
+
   test("POST /send rejects unknown SMTP account", async () => {
     const tokenBody = await getToken(baseUrl);
 

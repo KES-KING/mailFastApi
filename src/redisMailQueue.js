@@ -5,7 +5,11 @@ const { createClient } = require("redis");
 function createRedisMailQueue(options = {}) {
   const redisUrl = options.redisUrl || "redis://127.0.0.1:6379";
   const queueKey = options.queueKey || "mailfastapi:mail_jobs";
+  const processingKey = options.processingKey || `${queueKey}:processing`;
+  const leaseKey = options.leaseKey || `${processingKey}:leases`;
   const commandTimeoutMs = Math.max(1000, toInt(options.commandTimeoutMs, 5000));
+  const visibilityTimeoutMs = Math.max(5000, toInt(options.visibilityTimeoutMs, 5 * 60 * 1000));
+  const reclaimIntervalMs = Math.max(1000, toInt(options.reclaimIntervalMs, 30 * 1000));
   const logger = options.logger;
 
   const pushClient = createClient({
@@ -18,10 +22,11 @@ function createRedisMailQueue(options = {}) {
 
   const state = {
     closed: false,
+    consumerClosed: false,
     started: false,
     polling: false,
-    localBuffer: [],
     waiters: [],
+    reclaimTimer: null,
   };
 
   pushClient.on("error", (error) => {
@@ -43,17 +48,30 @@ function createRedisMailQueue(options = {}) {
     await popClient.connect();
     await depthClient.connect();
     state.started = true;
+    state.closed = false;
+    state.consumerClosed = false;
 
-    emitInfo("redis mail queue started", { queueKey, redisUrl });
-    startPollingLoop();
+    await ensureProcessingLeases();
+    emitInfo("redis mail queue started", {
+      queueKey,
+      processingKey,
+      redisUrl,
+      visibilityTimeoutMs,
+    });
+    startReclaimLoop();
   }
 
   async function stop() {
-    if (state.closed) {
+    if (state.closed && !pushClient.isOpen && !popClient.isOpen && !depthClient.isOpen) {
       return;
     }
 
     state.closed = true;
+    state.consumerClosed = true;
+    if (state.reclaimTimer) {
+      clearInterval(state.reclaimTimer);
+      state.reclaimTimer = null;
+    }
     while (state.waiters.length) {
       const waiter = state.waiters.shift();
       waiter();
@@ -81,63 +99,165 @@ function createRedisMailQueue(options = {}) {
   }
 
   async function dequeue() {
-    while (true) {
-      if (state.localBuffer.length > 0) {
-        return state.localBuffer.shift();
+    while (!state.consumerClosed && !state.closed) {
+      try {
+        const raw = await popClient.brPopLPush(queueKey, processingKey, 1);
+        if (!raw) {
+          continue;
+        }
+        await setLease(raw);
+        const parsed = parseJob(raw);
+        if (!parsed) {
+          await ackRaw(raw);
+          emitWarn("invalid redis queue payload skipped", {});
+          continue;
+        }
+        attachQueueToken(parsed, raw);
+        return parsed;
+      } catch (error) {
+        if (state.consumerClosed || state.closed) {
+          break;
+        }
+        emitWarn("redis dequeue error", { message: safeError(error) });
+        await wait(200);
       }
+    }
+    return null;
+  }
 
-      if (state.closed) {
-        return null;
+  async function ack(job) {
+    const raw = getQueueToken(job);
+    if (!raw) {
+      return false;
+    }
+    return ackRaw(raw);
+  }
+
+  async function touch(job, leaseMs = visibilityTimeoutMs) {
+    const raw = getQueueToken(job);
+    if (!raw || state.closed) {
+      return false;
+    }
+    await pushClient.zAdd(leaseKey, {
+      score: Date.now() + Math.max(5000, Number(leaseMs) || visibilityTimeoutMs),
+      value: raw,
+    });
+    return true;
+  }
+
+  async function ackRaw(raw) {
+    await Promise.allSettled([pushClient.lRem(processingKey, 1, raw), pushClient.zRem(leaseKey, raw)]);
+    return true;
+  }
+
+  async function setLease(raw) {
+    await popClient.zAdd(leaseKey, {
+      score: Date.now() + visibilityTimeoutMs,
+      value: raw,
+    });
+  }
+
+  async function ensureProcessingLeases() {
+    try {
+      const processingItems = await depthClient.lRange(processingKey, 0, -1);
+      if (!Array.isArray(processingItems) || processingItems.length === 0) {
+        return;
       }
+      const now = Date.now();
+      for (const raw of processingItems) {
+        const score = await depthClient.zScore(leaseKey, raw);
+        if (score === null || score === undefined) {
+          await depthClient.zAdd(leaseKey, { score: now - 1, value: raw });
+        }
+      }
+    } catch (error) {
+      emitWarn("redis processing lease scan failed", { message: safeError(error) });
+    }
+  }
 
-      await new Promise((resolve) => state.waiters.push(resolve));
+  function startReclaimLoop() {
+    if (state.reclaimTimer) {
+      return;
+    }
+
+    state.reclaimTimer = setInterval(() => {
+      void reclaimExpiredLeases();
+    }, reclaimIntervalMs);
+    state.reclaimTimer.unref();
+    void reclaimExpiredLeases();
+  }
+
+  async function reclaimExpiredLeases() {
+    if (state.closed) {
+      return;
+    }
+
+    let expired = [];
+    try {
+      expired = await depthClient.sendCommand([
+        "ZRANGEBYSCORE",
+        leaseKey,
+        "-inf",
+        String(Date.now()),
+        "LIMIT",
+        "0",
+        "100",
+      ]);
+    } catch (error) {
+      emitWarn("redis lease lookup failed", { message: safeError(error) });
+      return;
+    }
+
+    if (!Array.isArray(expired) || expired.length === 0) {
+      return;
+    }
+
+    for (const raw of expired) {
+      try {
+        const moved = await depthClient.sendCommand([
+          "EVAL",
+          [
+            "if redis.call('LREM', KEYS[1], 1, ARGV[1]) > 0 then",
+            "  redis.call('ZREM', KEYS[2], ARGV[1])",
+            "  redis.call('RPUSH', KEYS[3], ARGV[1])",
+            "  return 1",
+            "end",
+            "redis.call('ZREM', KEYS[2], ARGV[1])",
+            "return 0",
+          ].join("\n"),
+          "3",
+          processingKey,
+          leaseKey,
+          queueKey,
+          raw,
+        ]);
+        if (Number(moved) === 1) {
+          emitWarn("redis queue visibility timeout expired, job requeued", {
+            queueKey,
+            processingKey,
+          });
+        }
+      } catch (error) {
+        emitWarn("redis lease reclaim failed", { message: safeError(error) });
+      }
     }
   }
 
   async function getDepth() {
-    if (state.closed) {
-      return state.localBuffer.length;
-    }
+    if (state.closed && !depthClient.isOpen) {
+        return null;
+      }
 
     const remoteDepth = await depthClient.lLen(queueKey);
-    return Number(remoteDepth || 0) + state.localBuffer.length;
+    return Number(remoteDepth || 0);
   }
 
-  function startPollingLoop() {
-    if (state.polling) {
-      return;
+  async function getProcessingDepth() {
+    if (state.closed && !depthClient.isOpen) {
+      return null;
     }
-
-    state.polling = true;
-    void pollLoop();
-  }
-
-  async function pollLoop() {
-    while (!state.closed) {
-      try {
-        const result = await popClient.brPop(queueKey, 1);
-        if (!result || !result.element) {
-          continue;
-        }
-
-        const parsed = parseJob(result.element);
-        if (!parsed) {
-          emitWarn("invalid redis queue payload skipped", {});
-          continue;
-        }
-
-        state.localBuffer.push(parsed);
-        wakeOne();
-      } catch (error) {
-        if (state.closed) {
-          break;
-        }
-        emitWarn("redis polling error", { message: safeError(error) });
-        await wait(200);
-      }
-    }
-
-    state.polling = false;
+    const remoteDepth = await depthClient.lLen(processingKey);
+    return Number(remoteDepth || 0);
   }
 
   function wakeOne() {
@@ -165,18 +285,36 @@ function createRedisMailQueue(options = {}) {
     stop,
     enqueue,
     dequeue,
+    ack,
+    touch,
     getDepth,
+    getProcessingDepth,
     close: () => {
-      state.closed = true;
+      state.consumerClosed = true;
       while (state.waiters.length) {
         const waiter = state.waiters.shift();
         waiter();
       }
     },
     get length() {
-      return state.localBuffer.length;
+      return 0;
     },
   };
+}
+
+function attachQueueToken(job, raw) {
+  Object.defineProperty(job, "__mailfastapiQueueToken", {
+    value: raw,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+function getQueueToken(job) {
+  if (!job || typeof job !== "object") {
+    return "";
+  }
+  return typeof job.__mailfastapiQueueToken === "string" ? job.__mailfastapiQueueToken : "";
 }
 
 function parseJob(raw) {

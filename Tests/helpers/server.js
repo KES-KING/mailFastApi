@@ -20,6 +20,7 @@ async function startTestServer(overrides = {}) {
   const useRealSmtp = Boolean(overrides.useRealSmtp);
   const rootDir = path.resolve(__dirname, "..", "..");
   const secureStoreDbPath = path.join(rootDir, "data", `test-secure-store-${port}.sqlite`);
+  const operationalDbPath = path.join(rootDir, "data", `test-operational-${port}.sqlite`);
 
   const env = {
     ...process.env,
@@ -27,6 +28,7 @@ async function startTestServer(overrides = {}) {
     QUEUE_BACKEND: "memory",
     QUEUE_MAX_SIZE: "10000",
     LOG_DB_PATH: `data/test-mailfastapi-${port}.sqlite`,
+    OPERATIONAL_DB_PATH: operationalDbPath,
     LOG_DIR: `logs/tests/${port}`,
     LOG_FILE_NAME: "system.log",
     LOG_FLUSH_INTERVAL_MS: "100",

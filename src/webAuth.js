@@ -21,6 +21,8 @@ function createWebAuth(options) {
   const failuresByIp = new Map();
 
   function securityHeaders(req, res, next) {
+    const cspNonce = crypto.randomBytes(16).toString("base64url");
+    res.locals.cspNonce = cspNonce;
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -30,8 +32,9 @@ function createWebAuth(options) {
       [
         "default-src 'self'",
         "img-src 'self' data:",
-        "script-src 'self' 'unsafe-inline'",
-        "style-src 'self' 'unsafe-inline'",
+        `script-src 'self' 'nonce-${cspNonce}'`,
+        `style-src 'self' 'nonce-${cspNonce}'`,
+        "style-src-attr 'none'",
         "connect-src 'self'",
         "base-uri 'none'",
         "frame-ancestors 'none'",

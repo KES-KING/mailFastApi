@@ -22,6 +22,9 @@ const { loadAuthConfig, authenticateClient, issueAccessToken, verifyJwt } = requ
 const { createSystemStore } = require("./systemStore");
 const { createSystemLogger } = require("./systemLogger");
 const { createMailQueue } = require("./mailQueueFactory");
+const { createOperationalStore } = require("./operationalStore");
+const { assertProductionSafety } = require("./productionGuard");
+const { checkDomainHealth, normalizeSelectors } = require("./domainHealth");
 const {
   createMonitor,
   renderMonitorPageHtml,
@@ -35,6 +38,7 @@ const RETRY_ATTEMPTS = Math.max(1, toInt(process.env.RETRY_ATTEMPTS, 3));
 const RETRY_DELAY_MS = Math.max(0, toInt(process.env.RETRY_DELAY_MS, 250));
 const SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.SHUTDOWN_TIMEOUT_MS, 20000));
 const SEND_SCOPE = "mail:send";
+const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 const REQUEST_BODY_LIMIT = String(process.env.REQUEST_BODY_LIMIT || "10mb").trim() || "10mb";
 const MAX_ATTACHMENTS = Math.max(0, toInt(process.env.MAX_ATTACHMENTS, 10));
 const MAX_ATTACHMENT_TOTAL_BYTES = Math.max(
@@ -50,8 +54,17 @@ const QUEUE_MAX_SIZE = Math.max(1, toInt(process.env.QUEUE_MAX_SIZE, 50000));
 const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
 const REDIS_QUEUE_KEY = process.env.REDIS_QUEUE_KEY || "mailfastapi:mail_jobs";
 const REDIS_COMMAND_TIMEOUT_MS = Math.max(1000, toInt(process.env.REDIS_COMMAND_TIMEOUT_MS, 5000));
+const QUEUE_VISIBILITY_TIMEOUT_MS = Math.max(
+  5000,
+  toInt(process.env.QUEUE_VISIBILITY_TIMEOUT_MS, 5 * 60 * 1000),
+);
+const QUEUE_RECLAIM_INTERVAL_MS = Math.max(
+  1000,
+  toInt(process.env.QUEUE_RECLAIM_INTERVAL_MS, 30 * 1000),
+);
 
 const LOG_DB_PATH = process.env.LOG_DB_PATH || "data/mailfastapi.sqlite";
+const OPERATIONAL_DB_PATH = process.env.OPERATIONAL_DB_PATH || "data/mailfastapi-operational.sqlite";
 const LOG_DIR = process.env.LOG_DIR || "logs";
 const LOG_FILE_NAME = process.env.LOG_FILE_NAME || "system.log";
 const LOG_FLUSH_INTERVAL_MS = Math.max(100, toInt(process.env.LOG_FLUSH_INTERVAL_MS, 300));
@@ -90,6 +103,24 @@ const MONITOR_MAX_TIMELINE_MINUTES = Math.max(
   toInt(process.env.MONITOR_MAX_TIMELINE_MINUTES, 180),
 );
 const MONITOR_LOGO_FILE_PATH = path.resolve(__dirname, "..", "MailFastApi_Logo.webp");
+const MAILFASTAPI_ROLE = String(process.env.MAILFASTAPI_ROLE || "all").trim().toLowerCase();
+const ROLE_API_ENABLED = MAILFASTAPI_ROLE === "all" || MAILFASTAPI_ROLE === "api";
+const ROLE_WORKER_ENABLED = MAILFASTAPI_ROLE === "all" || MAILFASTAPI_ROLE === "worker";
+const SUPPRESSION_ENABLED = toBoolean(process.env.SUPPRESSION_ENABLED, true);
+const SUPPRESSION_APPLIES_TO = parseCsv(process.env.SUPPRESSION_APPLIES_TO || "marketing,bulk");
+const IDEMPOTENCY_ENABLED = toBoolean(process.env.IDEMPOTENCY_ENABLED, true);
+const IDEMPOTENCY_HEADER = String(process.env.IDEMPOTENCY_HEADER || "idempotency-key").trim().toLowerCase();
+const IDEMPOTENCY_TTL_MS = Math.max(
+  60 * 1000,
+  toInt(process.env.IDEMPOTENCY_TTL_MS, DEFAULT_IDEMPOTENCY_TTL_MS),
+);
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+const UNSUBSCRIBE_SECRET = String(process.env.UNSUBSCRIBE_SECRET || process.env.JWT_SECRET || "").trim();
+const DOMAIN_HEALTH_DKIM_SELECTORS = normalizeSelectors(
+  process.env.DOMAIN_HEALTH_DKIM_SELECTORS || "default,mail",
+);
+
+const productionSafety = assertProductionSafety(process.env);
 
 const authConfig = loadAuthConfig(process.env);
 const monitor = createMonitor({
@@ -100,10 +131,12 @@ const monitor = createMonitor({
 const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 const monitorApp = MONITOR_SEPARATE_PORT ? express() : app;
 monitorApp.disable("x-powered-by");
 
 const store = createSystemStore({ dbPath: LOG_DB_PATH });
+const operationalStore = createOperationalStore({ dbPath: OPERATIONAL_DB_PATH });
 const logger = createSystemLogger({
   store,
   logDir: LOG_DIR,
@@ -120,6 +153,8 @@ const queue = createMailQueue({
   redisUrl: REDIS_URL,
   queueKey: REDIS_QUEUE_KEY,
   commandTimeoutMs: REDIS_COMMAND_TIMEOUT_MS,
+  visibilityTimeoutMs: QUEUE_VISIBILITY_TIMEOUT_MS,
+  reclaimIntervalMs: QUEUE_RECLAIM_INTERVAL_MS,
   logger,
 });
 
@@ -132,6 +167,12 @@ const worker = createWorker({
   concurrency: WORKER_CONCURRENCY,
   retryAttempts: RETRY_ATTEMPTS,
   retryDelayMs: RETRY_DELAY_MS,
+  deadLetterSink: (job, error) => {
+    operationalStore.insertDeadLetterJob(
+      job,
+      error && error.message ? error.message : "Unknown SMTP error",
+    );
+  },
   logger: runtimeLog,
 });
 
@@ -172,6 +213,16 @@ if (authConfig.mode === "jwt") {
   );
 }
 
+app.get("/unsubscribe", (req, res) => {
+  const result = handleUnsubscribeRequest(req.query || {}, "one-click");
+  res.status(result.statusCode).type("text/plain").send(result.message);
+});
+
+app.post("/unsubscribe", (req, res) => {
+  const result = handleUnsubscribeRequest(req.body || {}, "one-click-post");
+  res.status(result.statusCode).json({ ok: result.ok, message: result.message });
+});
+
 app.get("/health", async (req, res, next) => {
   try {
     const runtime = await collectRuntimeMetrics();
@@ -179,6 +230,7 @@ app.get("/health", async (req, res, next) => {
       status: "ok",
       uptimeSec: Number(process.uptime().toFixed(2)),
       queueDepth: runtime.queueDepth,
+      processingDepth: runtime.processingDepth,
       activeJobs: runtime.activeJobs,
       authMode: runtime.authMode,
       queueBackend: runtime.queueBackend,
@@ -201,8 +253,63 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   const traceId = req.header("x-request-id") || crypto.randomUUID();
   const jobId = crypto.randomUUID();
   const now = Date.now();
+  let tenantId;
+  try {
+    tenantId = getTenantId(req, normalizedPayload);
+  } catch (tenantError) {
+    return res.status(400).json({ error: tenantError.message || "Invalid tenant." });
+  }
+  const actor = getActor(req);
+  const rawIdempotencyKey = clean(req.header(IDEMPOTENCY_HEADER));
+  const idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
+  if (rawIdempotencyKey && !idempotencyKey) {
+    return res.status(400).json({
+      error: "Idempotency key must be printable ASCII and at most 256 characters.",
+    });
+  }
+  const idempotencyScope = `${tenantId}:${actor}`;
+  const requestHash = hashRequest(normalizedPayload);
+  if (IDEMPOTENCY_ENABLED && idempotencyKey) {
+    const existing = operationalStore.getIdempotencyRecord(idempotencyScope, idempotencyKey);
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        logger.warn("idempotency key conflict", { traceId, tenantId, idempotencyKey });
+        operationalStore.insertAuditEvent(actor, "idempotency.conflict", "mail", {
+          traceId,
+          tenantId,
+          idempotencyKey,
+        });
+        return res.status(409).json({
+          error: "Idempotency key was already used with a different request.",
+        });
+      }
+      res.setHeader("X-Idempotent-Replay", "true");
+      return res.status(existing.statusCode).json(existing.response);
+    }
+  }
+
   const resolvedFrom =
     normalizedPayload.from || getDefaultFromForAccount(normalizedPayload.smtpAccount);
+  const recipients = Array.isArray(normalizedPayload.to)
+    ? normalizedPayload.to
+    : [normalizedPayload.to];
+  if (shouldApplySuppression(normalizedPayload.category)) {
+    const suppressed = operationalStore.findSuppressedRecipients(recipients, tenantId);
+    if (suppressed.length > 0) {
+      logger.warn(
+        "mail suppressed",
+        { traceId, jobId, tenantId, suppressed, category: normalizedPayload.category },
+        { traceId, source: "api" },
+      );
+      operationalStore.insertAuditEvent(actor, "mail.suppressed", "suppression", {
+        traceId,
+        tenantId,
+        suppressed,
+      });
+      return res.status(409).json({ error: "One or more recipients are suppressed.", suppressed });
+    }
+  }
+  const unsubscribeUrl = buildUnsubscribeUrl(normalizedPayload, tenantId);
 
   logger.info(
     "request received",
@@ -211,9 +318,11 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       method: req.method,
       traceId,
       jobId,
+      tenantId,
       to: normalizedPayload.to,
       from: resolvedFrom,
       smtpAccount: normalizedPayload.smtpAccount,
+      category: normalizedPayload.category,
       authSub: req.auth ? req.auth.sub : undefined,
     },
     { traceId, source: "api" },
@@ -222,6 +331,7 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   try {
     await queue.enqueue({
       id: jobId,
+      tenantId,
       smtpAccount: normalizedPayload.smtpAccount,
       to: normalizedPayload.to,
       from: normalizedPayload.from || undefined,
@@ -229,6 +339,8 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
       html: normalizedPayload.html,
       text: normalizedPayload.text || undefined,
       attachments: normalizedPayload.attachments || undefined,
+      category: normalizedPayload.category,
+      unsubscribeUrl,
       queuedAt: now,
     });
   } catch (error) {
@@ -255,7 +367,9 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
     {
       traceId,
       jobId,
+      tenantId,
       smtpAccount: normalizedPayload.smtpAccount,
+      category: normalizedPayload.category,
       from: resolvedFrom,
       queueDepth,
       queueBackend: queue.backend,
@@ -263,7 +377,26 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
     { traceId, source: "api" },
   );
 
-  return res.status(202).json({ status: "queued" });
+  const responseBody = { status: "queued" };
+  if (IDEMPOTENCY_ENABLED && idempotencyKey) {
+    operationalStore.putIdempotencyRecord(
+      idempotencyScope,
+      idempotencyKey,
+      requestHash,
+      202,
+      responseBody,
+      IDEMPOTENCY_TTL_MS,
+    );
+  }
+  operationalStore.insertAuditEvent(actor, "mail.queued", "mail", {
+    traceId,
+    jobId,
+    tenantId,
+    smtpAccount: normalizedPayload.smtpAccount,
+    category: normalizedPayload.category,
+  });
+
+  return res.status(202).json(responseBody);
 });
 
 app.use(handleServerError);
@@ -288,6 +421,11 @@ bootstrap().catch(async (error) => {
   } catch (storeError) {
     // noop
   }
+  try {
+    operationalStore.close();
+  } catch (operationalStoreError) {
+    // noop
+  }
   console.error(`[${new Date().toISOString()}] [ERROR] startup failed`, { message });
   process.exit(1);
 });
@@ -301,11 +439,16 @@ async function bootstrap() {
   await logger.start();
   await queue.start();
 
-  worker.start();
-  verifyTransporters(runtimeLog);
-  await listenServer(server, PORT);
+  if (ROLE_WORKER_ENABLED) {
+    worker.start();
+    verifyTransporters(runtimeLog);
+  }
 
-  if (monitorServer) {
+  if (ROLE_API_ENABLED) {
+    await listenServer(server, PORT);
+  }
+
+  if (ROLE_API_ENABLED && monitorServer) {
     await listenServer(monitorServer, MONITOR_PORT, MONITOR_HOST || undefined);
   }
 
@@ -317,6 +460,7 @@ async function bootstrap() {
     monitorSeparatePort: MONITOR_SEPARATE_PORT,
     monitorPort: MONITOR_PORT,
     monitorHost: MONITOR_HOST || undefined,
+    role: MAILFASTAPI_ROLE,
     metricsPath: METRICS_PATH,
     workerConcurrency: WORKER_CONCURRENCY,
     authMode: authConfig.mode,
@@ -328,6 +472,8 @@ async function bootstrap() {
     defaultSmtpAccount: getDefaultSmtpAccountName(),
     logFilePath: logger.getLogFilePath(),
     logDbPath: store.getDbPath(),
+    operationalDbPath: operationalStore.getDbPath(),
+    productionSafetyEnabled: productionSafety.enabled,
   });
 }
 
@@ -346,15 +492,18 @@ async function gracefulShutdown(signal) {
   forceExit.unref();
 
   try {
-    if (monitorServer) {
+    if (ROLE_API_ENABLED && monitorServer) {
       await closeServer(monitorServer);
     }
-    await closeServer(server);
+    if (ROLE_API_ENABLED) {
+      await closeServer(server);
+    }
     await worker.stop({ drainTimeoutMs: SHUTDOWN_TIMEOUT_MS });
     await queue.stop();
     await closeTransporters();
     await logger.close();
     store.close();
+    operationalStore.close();
     process.exit(0);
   } catch (error) {
     logger.error("shutdown failed", {
@@ -368,6 +517,11 @@ async function gracefulShutdown(signal) {
     try {
       store.close();
     } catch (storeError) {
+      // noop
+    }
+    try {
+      operationalStore.close();
+    } catch (operationalStoreError) {
       // noop
     }
     process.exit(1);
@@ -497,6 +651,24 @@ function registerMonitorRoutes(targetApp) {
       next(error);
     }
   });
+
+  targetApp.get("/domain-health/:domain", monitorAuth, async (req, res, next) => {
+    try {
+      const selectors =
+        req.query && req.query.selector
+          ? Array.isArray(req.query.selector)
+            ? req.query.selector
+            : String(req.query.selector).split(",")
+          : DOMAIN_HEALTH_DKIM_SELECTORS;
+      const result = await checkDomainHealth(req.params.domain, { selectors });
+      res.status(200).json(result);
+    } catch (error) {
+      if (error && error.code === "INVALID_DOMAIN") {
+        return res.status(400).json({ error: error.message });
+      }
+      return next(error);
+    }
+  });
 }
 
 async function collectMonitorSnapshot() {
@@ -506,17 +678,27 @@ async function collectMonitorSnapshot() {
 
 async function collectRuntimeMetrics() {
   let queueDepth = null;
+  let processingDepth = null;
   try {
     queueDepth = await queue.getDepth();
   } catch (error) {
     queueDepth = null;
   }
+  if (typeof queue.getProcessingDepth === "function") {
+    try {
+      processingDepth = await queue.getProcessingDepth();
+    } catch (error) {
+      processingDepth = null;
+    }
+  }
 
   return {
     queueDepth,
+    processingDepth,
     activeJobs: worker.getActiveJobs(),
     authMode: authConfig.mode,
     queueBackend: queue.backend,
+    role: MAILFASTAPI_ROLE,
     smtpAccounts: getSmtpAccountNames(),
     smtpAccountDetails: getSmtpAccountSummaries(),
     defaultSmtpAccount: getDefaultSmtpAccountName(),
@@ -640,6 +822,21 @@ function validateSendPayload(body) {
     return { error: "`html` is required." };
   }
 
+  const category = normalizeMailCategory(body.category);
+  if (!category) {
+    return {
+      error: "`category` must be one of transactional, security, notification, marketing, or bulk.",
+    };
+  }
+
+  let tenantId;
+  if (body.tenantId !== undefined) {
+    tenantId = clean(body.tenantId).toLowerCase();
+    if (!isValidTenantId(tenantId)) {
+      return { error: "`tenantId` must contain only letters, numbers, underscores, and dashes." };
+    }
+  }
+
   let from;
   if (body.from !== undefined) {
     if (typeof body.from !== "string" || body.from.trim() === "") {
@@ -696,8 +893,129 @@ function validateSendPayload(body) {
       html: body.html,
       text,
       attachments: attachmentResult.attachments,
+      category,
+      tenantId,
     },
   };
+}
+
+function normalizeMailCategory(value) {
+  if (value === undefined || value === null || value === "") {
+    return "transactional";
+  }
+  const normalized = String(value).trim().toLowerCase();
+  return ["transactional", "security", "notification", "marketing", "bulk"].includes(normalized)
+    ? normalized
+    : "";
+}
+
+function shouldApplySuppression(category) {
+  return SUPPRESSION_ENABLED && SUPPRESSION_APPLIES_TO.includes(String(category || "").toLowerCase());
+}
+
+function buildUnsubscribeUrl(payload, tenantId) {
+  if (!PUBLIC_BASE_URL || !UNSUBSCRIBE_SECRET || !["marketing", "bulk"].includes(payload.category)) {
+    return "";
+  }
+
+  const firstRecipient = Array.isArray(payload.to) ? payload.to[0] : payload.to;
+  if (!firstRecipient || !isValidEmail(firstRecipient)) {
+    return "";
+  }
+
+  const url = new URL("/unsubscribe", PUBLIC_BASE_URL);
+  url.searchParams.set("email", firstRecipient.toLowerCase());
+  url.searchParams.set("tenantId", tenantId);
+  url.searchParams.set("token", createUnsubscribeToken(firstRecipient, tenantId));
+  return url.toString();
+}
+
+function handleUnsubscribeRequest(input, source) {
+  const email = clean(input.email).toLowerCase();
+  const tenantId = normalizeTenant(input.tenantId || "global");
+  const token = clean(input.token);
+  if (!isValidEmail(email) || !token) {
+    return { ok: false, statusCode: 400, message: "Invalid unsubscribe request." };
+  }
+  if (!UNSUBSCRIBE_SECRET || !safeEqualStrings(token, createUnsubscribeToken(email, tenantId))) {
+    return { ok: false, statusCode: 401, message: "Invalid unsubscribe token." };
+  }
+
+  operationalStore.addSuppression(email, {
+    tenantId,
+    reason: "unsubscribe",
+    source,
+    actor: email,
+  });
+  logger.info("recipient unsubscribed", { email, tenantId, source }, { source: "api" });
+  return { ok: true, statusCode: 200, message: "Unsubscribed." };
+}
+
+function createUnsubscribeToken(email, tenantId) {
+  return crypto
+    .createHmac("sha256", UNSUBSCRIBE_SECRET)
+    .update(`${normalizeTenant(tenantId)}:${String(email || "").trim().toLowerCase()}`)
+    .digest("base64url");
+}
+
+function hashRequest(value) {
+  return crypto.createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function getTenantId(req, payload) {
+  const fromHeader = clean(req.header("x-tenant-id"));
+  const fromPayload = clean(payload && payload.tenantId);
+  const fromAuth = req.auth && req.auth.tenant ? clean(req.auth.tenant) : "";
+  const selected = fromHeader || fromPayload || fromAuth || "global";
+  if (!isValidTenantId(selected)) {
+    const error = new Error("`tenantId` must contain only letters, numbers, underscores, and dashes.");
+    error.code = "INVALID_TENANT_ID";
+    throw error;
+  }
+  return selected.toLowerCase();
+}
+
+function getActor(req) {
+  if (req.auth && req.auth.sub) {
+    return `jwt:${req.auth.sub}`;
+  }
+  if (authConfig.mode === "api_key") {
+    return "api_key";
+  }
+  return `ip:${req.ip || req.socket.remoteAddress || "unknown"}`;
+}
+
+function normalizeTenant(value) {
+  const tenant = clean(value || "global").toLowerCase();
+  return isValidTenantId(tenant) ? tenant : "global";
+}
+
+function normalizeIdempotencyKey(value) {
+  const key = clean(value);
+  if (!key) {
+    return "";
+  }
+  if (key.length > 256 || !/^[\x20-\x7E]+$/.test(key)) {
+    return "";
+  }
+  return key;
+}
+
+function isValidTenantId(value) {
+  return /^[a-z0-9][a-z0-9_-]{0,62}$/i.test(clean(value));
 }
 
 function isValidEmail(value) {
@@ -908,6 +1226,17 @@ function toBoolean(value, fallback) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function parseCsv(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function clean(value) {
+  return String(value || "").trim();
 }
 
 function normalizePath(value) {

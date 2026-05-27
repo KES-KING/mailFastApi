@@ -53,6 +53,7 @@ function createMonitor(options = {}) {
       uptimeSec: round2((Date.now() - startedAtMs) / 1000),
       runtime: {
         queueDepth: numberOrNull(runtime.queueDepth),
+        processingDepth: numberOrNull(runtime.processingDepth),
         activeJobs: numberOrNull(runtime.activeJobs),
         authMode: runtime.authMode || null,
         queueBackend: runtime.queueBackend || null,
@@ -75,6 +76,7 @@ function createMonitor(options = {}) {
   function toPrometheus(runtime = {}) {
     const uptimeSec = round3((Date.now() - startedAtMs) / 1000);
     const queueDepth = numberOrZero(runtime.queueDepth);
+    const processingDepth = numberOrZero(runtime.processingDepth);
     const activeJobs = numberOrZero(runtime.activeJobs);
 
     const lines = [
@@ -85,6 +87,10 @@ function createMonitor(options = {}) {
       "# HELP mailfastapi_queue_depth Current queue depth.",
       "# TYPE mailfastapi_queue_depth gauge",
       `mailfastapi_queue_depth ${queueDepth}`,
+      "",
+      "# HELP mailfastapi_queue_processing_depth Current processing queue depth.",
+      "# TYPE mailfastapi_queue_processing_depth gauge",
+      `mailfastapi_queue_processing_depth ${processingDepth}`,
       "",
       "# HELP mailfastapi_active_jobs Current active worker jobs.",
       "# TYPE mailfastapi_active_jobs gauge",
@@ -395,6 +401,7 @@ function renderMonitorPageHtml(options = {}) {
   const csrfToken = escapeHtml(options.csrfToken || "");
   const logoutPath = escapeHtml(options.logoutPath || "/logout");
   const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
+  const nonceAttr = formatNonceAttr(options.cspNonce);
 
   return `<!doctype html>
 <html lang="en">
@@ -402,7 +409,7 @@ function renderMonitorPageHtml(options = {}) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${title}</title>
-  <style>
+  <style${nonceAttr}>
     :root {
       --bg: #dedede;
       --header: #efefef;
@@ -492,6 +499,15 @@ function renderMonitorPageHtml(options = {}) {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .inline-form { margin: 0; }
+    .col-account { width: 160px; }
+    .col-requests, .col-success { width: 120px; }
+    .col-small { width: 100px; }
+    .col-last-seen, .col-event { width: 190px; }
+    .col-manage, .col-source { width: 90px; }
+    .col-time { width: 180px; }
+    .col-level { width: 80px; }
+    .col-trace { width: 170px; }
     .action-btn {
       border: 1px solid var(--line);
       background: #f9fafb;
@@ -919,7 +935,7 @@ function renderMonitorPageHtml(options = {}) {
         aria-label="GitHub Help"
       >?</a>
       <a class="action-btn" href="${smtpSettingsPath}">SMTP Accounts</a>
-      <form method="post" action="${logoutPath}" style="margin:0;">
+      <form method="post" action="${logoutPath}" class="inline-form">
         <input type="hidden" name="_csrf" value="${csrfToken}" />
         <button type="submit" class="action-btn">Logout</button>
       </form>
@@ -992,16 +1008,16 @@ function renderMonitorPageHtml(options = {}) {
         <table>
           <thead>
             <tr>
-              <th style="width:160px;">Account</th>
-              <th style="width:120px;">Requests</th>
-              <th style="width:100px;">Queued</th>
-              <th style="width:100px;">Sent</th>
-              <th style="width:100px;">Failed</th>
-              <th style="width:100px;">Retry</th>
-              <th style="width:120px;">Success</th>
+              <th class="col-account">Account</th>
+              <th class="col-requests">Requests</th>
+              <th class="col-small">Queued</th>
+              <th class="col-small">Sent</th>
+              <th class="col-small">Failed</th>
+              <th class="col-small">Retry</th>
+              <th class="col-success">Success</th>
               <th>Senders</th>
-              <th style="width:190px;">Last Seen</th>
-              <th style="width:90px;">Manage</th>
+              <th class="col-last-seen">Last Seen</th>
+              <th class="col-manage">Manage</th>
             </tr>
           </thead>
           <tbody id="accountsBody"></tbody>
@@ -1029,12 +1045,12 @@ function renderMonitorPageHtml(options = {}) {
         <table>
           <thead>
             <tr>
-              <th style="width:180px;">Time</th>
-              <th style="width:80px;">Level</th>
-              <th style="width:190px;">Event</th>
-              <th style="width:130px;">Account</th>
-              <th style="width:90px;">Source</th>
-              <th style="width:170px;">Trace</th>
+              <th class="col-time">Time</th>
+              <th class="col-level">Level</th>
+              <th class="col-event">Event</th>
+              <th class="col-account">Account</th>
+              <th class="col-source">Source</th>
+              <th class="col-trace">Trace</th>
               <th>Details</th>
             </tr>
           </thead>
@@ -1044,7 +1060,7 @@ function renderMonitorPageHtml(options = {}) {
     </article>
   </div>
 
-  <script>
+  <script${nonceAttr}>
     const statsPath = "${statsPath}";
     const streamPath = "${streamPath}";
     const updateCheckPath = "${updateCheckPath}";
@@ -1612,6 +1628,7 @@ function renderMonitorMetricsPageHtml(options = {}) {
   const metricsPath = escapeHtml(options.metricsPath || "/metrics");
   const monitorPath = escapeHtml(options.monitorPath || "/monitor");
   const rawViewPath = escapeHtml(options.rawViewPath || "/monitor/raw-view");
+  const nonceAttr = formatNonceAttr(options.cspNonce);
 
   return `<!doctype html>
 <html lang="en">
@@ -1619,7 +1636,7 @@ function renderMonitorMetricsPageHtml(options = {}) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${title}</title>
-  <style>
+  <style${nonceAttr}>
     :root {
       --bg: #c8c8c8;
       --panel: #efefef;
@@ -1682,6 +1699,11 @@ function renderMonitorMetricsPageHtml(options = {}) {
     }
     .k { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
     .v { font-size: 20px; font-weight: 700; color: #111; }
+    .v.compact { font-size: 13px; }
+    .metric-name { width: 280px; }
+    .metric-type { width: 120px; }
+    .metric-labels { width: 300px; }
+    .empty-metric { padding: 10px; color: #555; }
     .panel {
       margin-top: 10px;
       border: 1px solid var(--line);
@@ -1770,7 +1792,7 @@ function renderMonitorMetricsPageHtml(options = {}) {
       <article class="card"><div class="k">Series</div><div id="seriesCount" class="v">0</div></article>
       <article class="card"><div class="k">Counters</div><div id="counterCount" class="v">0</div></article>
       <article class="card"><div class="k">Gauges</div><div id="gaugeCount" class="v">0</div></article>
-      <article class="card"><div class="k">Last Update</div><div id="updated" class="v" style="font-size:13px;">-</div></article>
+      <article class="card"><div class="k">Last Update</div><div id="updated" class="v compact">-</div></article>
     </section>
 
     <section class="panel">
@@ -1780,9 +1802,9 @@ function renderMonitorMetricsPageHtml(options = {}) {
         <table>
           <thead>
             <tr>
-              <th style="width:280px;">Metric</th>
-              <th style="width:120px;">Type</th>
-              <th style="width:300px;">Labels</th>
+              <th class="metric-name">Metric</th>
+              <th class="metric-type">Type</th>
+              <th class="metric-labels">Labels</th>
               <th>Value</th>
             </tr>
           </thead>
@@ -1797,7 +1819,7 @@ function renderMonitorMetricsPageHtml(options = {}) {
     </section>
   </div>
 
-  <script>
+  <script${nonceAttr}>
     const metricsPath = "${metricsPath}";
     const ids = {
       seriesCount: document.getElementById("seriesCount"),
@@ -1862,7 +1884,7 @@ function renderMonitorMetricsPageHtml(options = {}) {
       ids.gaugeCount.textContent = gaugeCount.toLocaleString("en-US");
 
       if (rows.length === 0) {
-        ids.metricsBody.innerHTML = "<tr><td colspan='4' style='padding:10px;color:#555;'>No metric series detected.</td></tr>";
+        ids.metricsBody.innerHTML = "<tr><td colspan='4' class='empty-metric'>No metric series detected.</td></tr>";
         return;
       }
 
@@ -1900,6 +1922,7 @@ function renderMonitorRawPageHtml(options = {}) {
   const statsPath = escapeHtml(options.statsPath || "/monitor/stats");
   const monitorPath = escapeHtml(options.monitorPath || "/monitor");
   const metricsViewPath = escapeHtml(options.metricsViewPath || "/monitor/metrics-view");
+  const nonceAttr = formatNonceAttr(options.cspNonce);
 
   return `<!doctype html>
 <html lang="en">
@@ -1907,7 +1930,7 @@ function renderMonitorRawPageHtml(options = {}) {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${title}</title>
-  <style>
+  <style${nonceAttr}>
     :root {
       --bg: #c8c8c8;
       --panel: #efefef;
@@ -2058,7 +2081,7 @@ function renderMonitorRawPageHtml(options = {}) {
     </section>
   </div>
 
-  <script>
+  <script${nonceAttr}>
     const statsPath = "${statsPath}";
     const ids = {
       generatedAt: document.getElementById("generatedAt"),
@@ -2234,6 +2257,11 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function formatNonceAttr(value) {
+  const nonce = escapeHtml(value || "");
+  return nonce ? ` nonce="${nonce}"` : "";
 }
 
 function toInt(value, fallback) {

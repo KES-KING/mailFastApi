@@ -16,6 +16,8 @@ function createMailQueue(options) {
     redisUrl: options && options.redisUrl,
     queueKey: options && options.queueKey,
     commandTimeoutMs: options && options.commandTimeoutMs,
+    visibilityTimeoutMs: options && options.visibilityTimeoutMs,
+    reclaimIntervalMs: options && options.reclaimIntervalMs,
     logger: options && options.logger,
   });
 }

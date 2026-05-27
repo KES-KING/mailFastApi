@@ -13,7 +13,9 @@
 
 - `/send` does **not** send mail synchronously.
 - Request payload is pushed to Redis queue (`REDIS_QUEUE_KEY`).
-- Background workers consume queue and deliver via the selected SMTP account pool.
+- Background workers consume leased queue jobs and deliver via the selected SMTP account pool.
+- Redis processing leases requeue expired jobs after `QUEUE_VISIBILITY_TIMEOUT_MS`.
+- Workers acknowledge jobs only after success or final dead-letter state.
 - API returns `202` immediately after queue write succeeds.
 
 ## Authentication Modes
@@ -70,6 +72,8 @@ Request:
 ```json
 {
   "smtpAccount": "info",
+  "tenantId": "tenant_a",
+  "category": "transactional",
   "to": "user@example.com",
   "subject": "Test Mail",
   "html": "<h1>Hello</h1>",
@@ -89,10 +93,19 @@ Notes:
 
 - `to` can be either a string (`"a@x.com"` or `"a@x.com,b@y.com"`) or an array (`["a@x.com","b@y.com"]`).
 - `smtpAccount`, `from`, `text`, and `attachments` are optional.
+- `tenantId` is optional and can also be supplied with `x-tenant-id`.
+- `category` defaults to `transactional`; accepted values are `transactional`, `security`, `notification`, `marketing`, `bulk`.
 - If `smtpAccount` is omitted, the API uses the default account saved in the encrypted SMTP vault.
 - If `from` matches a configured account sender address, that account is selected automatically.
 - `attachments[].content` must be base64.
 - Inline attachments are supported via `attachments[].content_id` (mapped to SMTP `cid`).
+- When `IDEMPOTENCY_ENABLED=true`, send retries can include the configured idempotency header
+  (`idempotency-key` by default). Matching requests replay the first response. Reusing the same
+  key with a different request returns `409`.
+- Suppression checks apply to the configured categories (`marketing,bulk` by default). Suppressed
+  recipients return `409`.
+- Marketing/bulk messages include one-click unsubscribe headers when `PUBLIC_BASE_URL` and
+  `UNSUBSCRIBE_SECRET` are configured.
 
 Success `202`:
 
@@ -107,6 +120,7 @@ Errors:
 - `400` invalid payload/json
 - `401` auth missing/invalid
 - `403` insufficient JWT scope (`mail:send`)
+- `409` idempotency conflict or suppressed recipient
 - `429` global rate limit
 - `503` queue full (memory backend mode)
 - `500` internal/queue/redis error
@@ -120,6 +134,7 @@ Success `200`:
   "status": "ok",
   "uptimeSec": 120.12,
   "queueDepth": 42,
+  "processingDepth": 1,
   "activeJobs": 2,
   "authMode": "jwt",
   "queueBackend": "redis"
@@ -142,6 +157,24 @@ Related endpoints:
 - `GET /monitor/metrics-view` -> formatted Prometheus metrics page
 - `GET /monitor/raw-view` -> formatted raw snapshot JSON page
 - `GET /metrics` -> Prometheus text metrics
+- `GET /domain-health/:domain` -> SPF, DKIM selector, and DMARC policy health diagnostics
+
+Domain health example:
+
+```bash
+curl -H "x-monitor-token: <TOKEN>" \
+  "http://localhost:3000/domain-health/example.com?selector=default,mail"
+```
+
+## Unsubscribe Endpoint
+
+When `PUBLIC_BASE_URL` and `UNSUBSCRIBE_SECRET` are set, marketing/bulk mail gets a signed
+unsubscribe URL.
+
+- `GET /unsubscribe?email=<EMAIL>&tenantId=<TENANT>&token=<TOKEN>`
+- `POST /unsubscribe`
+
+Successful unsubscribe creates a tenant-level suppression entry in the operational store.
 
 ## Legacy Web Panel
 
@@ -172,9 +205,15 @@ When `WEB_UPDATE_TOKEN` is set, update endpoints also require the `x-update-toke
 
 - Backend selection: `QUEUE_BACKEND=redis|memory`
 - Recommended: `redis` for production
-- Queue key: `REDIS_QUEUE_KEY`
+- Pending queue key: `REDIS_QUEUE_KEY`
+- Processing queue key: `${REDIS_QUEUE_KEY}:processing`
+- Lease sorted set: `${REDIS_QUEUE_KEY}:processing:leases`
 - Connection URL: `REDIS_URL`
 - Command timeout: `REDIS_COMMAND_TIMEOUT_MS`
+- Visibility timeout: `QUEUE_VISIBILITY_TIMEOUT_MS`
+- Reclaim interval: `QUEUE_RECLAIM_INTERVAL_MS`
+
+Production mode rejects `QUEUE_BACKEND=memory`.
 
 ## SMTP Account Routing
 

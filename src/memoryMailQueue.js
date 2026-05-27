@@ -16,7 +16,10 @@ function createMemoryMailQueue(options = {}) {
       return queue.length;
     },
     dequeue: async () => queue.dequeue(),
+    ack: async () => true,
+    touch: async () => true,
     getDepth: async () => queue.length,
+    getProcessingDepth: async () => 0,
     close: () => queue.close(),
     get length() {
       return queue.length;
