@@ -2,6 +2,10 @@
 
 High-performance Node.js email microservice with split core/web architecture.
 
+GPLv3 community release: this project is licensed under the GNU General Public License v3.0.
+The goal is to provide an open, inspectable mail queueing, caching, delivery, and operations
+platform that the community can run, study, fork, and improve.
+
 Core design:
 
 - Incoming email requests are validated, checked for idempotency/suppression, and written to Redis queue immediately.
@@ -18,6 +22,23 @@ Client -> Core API (/send, /auth/token, /health) -> Queue -> Worker -> SMTP Prov
 Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
                  -> SMTP Account Manager + Secure Update Control (scripts/updater.js)
 ```
+
+## Web Panel Preview
+
+The legacy web panel is served directly from the root of port `8080`.
+Screenshots below were captured from a local development run on 2026-05-27.
+
+### Secure Web Login
+
+![MailFastApi legacy web login](./docs/assets/web-login.png)
+
+### Legacy Monitor - Desktop
+
+![MailFastApi legacy monitor desktop](./docs/assets/web-monitor-desktop.png)
+
+### Legacy Monitor - Mobile
+
+![MailFastApi legacy monitor mobile](./docs/assets/web-monitor-mobile.png)
 
 ## Key Features
 
@@ -45,6 +66,31 @@ Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/st
   - `npm run log:mailsender`
 - Legacy web monitor at `http://localhost:8080` with SMTP account filtering
 - SMTP account management at `http://localhost:8080/smtp`
+
+## Current Enterprise Scope
+
+MailFastApi now includes the core repository controls required for a larger transactional
+and marketing email platform:
+
+| Capability | Current status |
+|---|---|
+| Multi SMTP accounts | Encrypted SQLite vault, account selection by `smtpAccount` or sender address |
+| Split API/worker runtime | `MAILFASTAPI_ROLE=api|worker|all` |
+| Durable production queue | Redis backend required by production guard |
+| Local/dev queue | Memory queue remains available for development and isolated tests |
+| Idempotency | Tenant/actor scoped idempotency records prevent duplicate queue writes |
+| Retry and DLQ | Worker retry, lifecycle states, and dead-letter persistence |
+| Suppression | Global and tenant-level suppression for bounces, complaints, and unsubscribes |
+| Deliverability | SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT diagnostics and optional DKIM signing |
+| Security | JWT/API-key auth, production guard, CSRF, CSP nonce, session hardening, RBAC |
+| MFA | Local TOTP can be enabled; development `.env` can disable it while production guard enforces safer settings |
+| Updates | Node.js updater with fast-forward flow, rollback, progress reporting, and signed-tag mode |
+| Observability | Health, Prometheus metrics, delivery events, queue depth, worker state, and legacy monitor |
+
+External production controls are still required for a real enterprise deployment: private network
+or VPN access for the admin panel, TLS termination, KMS/Vault or OS secret delivery, owned DNS
+records, provider feedback-loop enrollment, signed release keys, Prometheus/Grafana deployment,
+and production-grade Redis persistence/failover.
 
 ## Project Structure
 
@@ -74,7 +120,10 @@ mailFastApi/
 |   |-- log-cli.js
 |   `-- updater.js
 |-- docs/
-|   `-- API_DOCS.md
+|   |-- API_DOCS.md
+|   |-- ENTERPRISE_HARDENING.md
+|   |-- TEST_REPORT.md
+|   `-- assets/
 |-- Tests/
 |-- updater.sh
 |-- .env.example
@@ -248,6 +297,23 @@ The web monitor links to the legacy `Update Control` screen. That screen checks 
 npm test
 ```
 
+Latest local verification summary is available in:
+
+- [docs/TEST_REPORT.md](./docs/TEST_REPORT.md)
+
+2026-05-27 local report:
+
+| Check | Result |
+|---|---|
+| `npm test` | 16 suites, 66 tests, 65 passed, 0 failed, 1 skipped |
+| Node syntax checks | passed for core, web, monitor, secure store, worker, updater |
+| `git diff --check` | passed |
+| Web visual smoke | Playwright screenshots captured under `docs/assets/` |
+| Autocannon load smoke | HTTP `202` responses recorded; no non-2xx status bucket reported; avg latency 7.15 ms |
+
+The load smoke test uses a temporary API-only instance with the worker disabled, so it validates
+queue acceptance and API overhead without sending real email.
+
 Real SMTP test:
 
 ```bash
@@ -260,6 +326,18 @@ Load test templates:
 k6 run Tests/load/k6-send.js
 ACCESS_TOKEN=<JWT_TOKEN> npm run test:load:autocannon
 ```
+
+Autocannon options:
+
+- `BASE_URL=http://127.0.0.1:3000`
+- `ACCESS_TOKEN=<JWT_TOKEN>`
+- `CONNECTIONS=50`
+- `DURATION=30`
+- `OVERALL_RATE=100`
+- `TEST_TO=load@example.com`
+
+The autocannon helper writes a temporary HAR file so `Authorization: Bearer <token>` is passed
+without fragile shell quoting.
 
 ## Log Dashboard
 
@@ -283,6 +361,7 @@ Endpoint details are in:
 
 - [docs/API_DOCS.md](./docs/API_DOCS.md)
 - [docs/ENTERPRISE_HARDENING.md](./docs/ENTERPRISE_HARDENING.md)
+- [docs/TEST_REPORT.md](./docs/TEST_REPORT.md)
 
 Multi-account send example, after adding the account in the web panel:
 
@@ -293,5 +372,36 @@ curl -X POST http://localhost:3000/send \
   -d "{\"smtpAccount\":\"2fa\",\"to\":\"user@example.com\",\"subject\":\"Kod\",\"html\":\"<p>123456</p>\"}"
 ```
 
+## GPL Community Distribution
+
+Before publishing a public release:
+
+- Keep `LICENSE` as GNU GPL v3.0.
+- Keep `.env`, `data/`, `logs/`, and secure SQLite vaults out of git.
+- Publish `.env.example`, docs, tests, and screenshots so users can reproduce the setup.
+- Prefer signed git tags for releases.
+- Run `npm test`, syntax checks, and at least one load smoke before tagging.
+- Do not publish real SMTP credentials, private DKIM keys, monitor tokens, updater tokens, or secure-store keys.
+
+Recommended public release flow:
+
+```bash
+npm test
+node --check src/app.js
+node --check src/web.js
+node --check src/monitor.js
+node --check src/secureStore.js
+node --check src/worker.js
+node --check scripts/updater.js
+git diff --check
+git tag -s vX.Y.Z -m "MailFastApi vX.Y.Z"
+git push origin main --tags
+```
+
+## Contributing
+
+Community contributions should include tests for behavior changes and documentation for operational
+or security-sensitive features. For mail-delivery changes, include the expected impact on queueing,
+idempotency, suppression, rate limiting, and deliverability.
 
 

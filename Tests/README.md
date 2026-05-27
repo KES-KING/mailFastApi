@@ -18,10 +18,24 @@ Tests/
 |   `-- server.js
 |-- integration/
 |   `-- api.integration.test.js
+|-- load/
+|   |-- autocannon-send.js
+|   `-- k6-send.js
 `-- unit/
     |-- auth.test.js
+    |-- bounceClassifier.test.js
+    |-- deliveryPolicy.test.js
+    |-- dkimConfig.test.js
+    |-- domainHealth.test.js
     |-- mailer.test.js
+    |-- monitor.test.js
+    |-- operationalStore.test.js
+    |-- productionGuard.test.js
     |-- secureStore.test.js
+    |-- totp.test.js
+    |-- updater.test.js
+    |-- webAuth.test.js
+    |-- worker.test.js
     `-- queue.test.js
 ```
 
@@ -31,6 +45,7 @@ Responsibilities:
 - `helpers/server.js`: starts/stops isolated app process with dedicated per-test SQLite/log paths
 - `integration/api.integration.test.js`: API-level behavior, auth flow, mailsend checks
 - `unit/*.test.js`: fast deterministic module tests
+- `load/*.js`: API load templates for k6 and autocannon
 
 ## 3. Execution Modes
 
@@ -139,7 +154,33 @@ Typical failures and checks:
 - Never expose real SMTP secrets in public CI logs.
 - Rotate CI-managed SMTP credentials periodically.
 
-## 9. Extending the Suite
+## 9. Load Smoke Helpers
+
+k6 template:
+
+```bash
+k6 run Tests/load/k6-send.js
+```
+
+Autocannon template:
+
+```bash
+ACCESS_TOKEN=<JWT_TOKEN> npm run test:load:autocannon
+```
+
+Useful environment options:
+
+- `BASE_URL=http://127.0.0.1:3000`
+- `CONNECTIONS=50`
+- `DURATION=30`
+- `OVERALL_RATE=100`
+- `TEST_TO=load@example.com`
+- `RENDER_STATUS_CODES=true`
+
+The autocannon helper writes a temporary HAR request so `Authorization: Bearer <token>`
+is passed safely across shells, including Windows PowerShell.
+
+## 10. Extending the Suite
 
 Recommended additions:
 
