@@ -89,6 +89,45 @@ describe("operational store", () => {
     }
   });
 
+  test("lists and marks dead-letter jobs as requeued", () => {
+    const store = createOperationalStore({ dbPath: createTempDbPath() });
+    try {
+      store.insertDeadLetterJob(
+        {
+          id: "job-2",
+          tenantId: "tenant_a",
+          to: ["retry@example.com"],
+          smtpAccount: "default",
+          subject: "Retry me",
+          html: "<p>retry</p>",
+        },
+        "smtp failed",
+      );
+
+      const pending = store.listDeadLetterJobs({ limit: 10 });
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].subject, "Retry me");
+
+      const full = store.getDeadLetterJob(pending[0].id);
+      assert.equal(full.job.subject, "Retry me");
+
+      assert.equal(
+        store.markDeadLetterRequeued(pending[0].id, {
+          requeuedJobId: "job-2-retry",
+          actor: "operator",
+        }),
+        true,
+      );
+      assert.deepEqual(store.listDeadLetterJobs({ limit: 10 }), []);
+
+      const all = store.listDeadLetterJobs({ limit: 10, includeRequeued: true });
+      assert.equal(all[0].requeuedJobId, "job-2-retry");
+      assert.equal(all[0].requeuedBy, "operator");
+    } finally {
+      store.close();
+    }
+  });
+
   test("records lifecycle states and delivery counters", () => {
     const store = createOperationalStore({ dbPath: createTempDbPath() });
     try {

@@ -13,6 +13,7 @@
     "test:load:k6": "k6 run Tests/load/k6-send.js",
     "test:load:autocannon": "node Tests/load/autocannon-send.js",
     "test:overload": "node Tests/load/overload-send.js",
+    "retry:failed": "node scripts/retry-dead-letters.js",
     "update:check": "node scripts/updater.js --check",
     "update:apply": "node scripts/updater.js --apply --yes",
     "log": "node scripts/log-cli.js",

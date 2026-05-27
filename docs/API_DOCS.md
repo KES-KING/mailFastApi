@@ -16,6 +16,7 @@
 - Background workers consume leased queue jobs and deliver via the selected SMTP account pool.
 - Redis processing leases requeue expired jobs after `QUEUE_VISIBILITY_TIMEOUT_MS`.
 - Workers acknowledge jobs only after success or final dead-letter state.
+- Dead-lettered jobs can be listed and retried through authenticated DLQ recovery endpoints.
 - API returns `202` immediately after queue write succeeds.
 
 ## Authentication Modes
@@ -216,6 +217,8 @@ The separate web panel service listens on fixed port `8080`.
 - `POST /smtp/accounts` -> create/update an SMTP account
 - `POST /smtp/default` -> set default SMTP account
 - `POST /smtp/accounts/delete` -> delete an SMTP account
+- `GET /dead-letters` -> list failed/dead-lettered jobs; requires JWT `admin`/`operator` role or API key auth
+- `POST /dead-letters/retry` -> requeue pending failed jobs; body supports `ids`, `limit`, `dryRun`, and `force`
 - `GET /stats` -> authenticated proxied core monitor snapshot
 - `GET /stream` -> authenticated proxied core monitor SSE stream
 - `GET /metrics-view` -> authenticated formatted Prometheus metrics page

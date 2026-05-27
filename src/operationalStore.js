@@ -48,8 +48,13 @@ function createOperationalStore(options = {}) {
       recipients_json TEXT NOT NULL,
       reason TEXT NOT NULL,
       job_json TEXT NOT NULL,
+      requeued_at_ms INTEGER,
+      requeued_job_id TEXT,
+      requeued_by TEXT,
       created_at_ms INTEGER NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_dead_letter_requeued ON dead_letter_jobs(requeued_at_ms, created_at_ms);
 
     CREATE TABLE IF NOT EXISTS audit_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +121,7 @@ function createOperationalStore(options = {}) {
       ON complaint_events(email, tenant_id, created_at_ms);
   `);
   migrateSuppressionPrimaryKey(db);
+  migrateDeadLetterReplayColumns(db);
 
   const addSuppressionStmt = db.prepare(`
     INSERT OR REPLACE INTO suppression_entries (
@@ -156,6 +162,23 @@ function createOperationalStore(options = {}) {
     INSERT INTO dead_letter_jobs (
       job_id, tenant_id, smtp_account, recipients_json, reason, job_json, created_at_ms
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const listPendingDeadLettersStmt = db.prepare(`
+    SELECT * FROM dead_letter_jobs
+    WHERE requeued_at_ms IS NULL
+    ORDER BY created_at_ms DESC, id DESC
+    LIMIT ?
+  `);
+  const listAllDeadLettersStmt = db.prepare(`
+    SELECT * FROM dead_letter_jobs
+    ORDER BY created_at_ms DESC, id DESC
+    LIMIT ?
+  `);
+  const getDeadLetterStmt = db.prepare("SELECT * FROM dead_letter_jobs WHERE id = ?");
+  const markDeadLetterRequeuedStmt = db.prepare(`
+    UPDATE dead_letter_jobs
+    SET requeued_at_ms = ?, requeued_job_id = ?, requeued_by = ?
+    WHERE id = ? AND requeued_at_ms IS NULL
   `);
 
   const getLastAuditStmt = db.prepare("SELECT event_hash FROM audit_events ORDER BY id DESC LIMIT 1");
@@ -281,6 +304,29 @@ function createOperationalStore(options = {}) {
       JSON.stringify(job || {}),
       Date.now(),
     );
+  }
+
+  function listDeadLetterJobs(options = {}) {
+    const limit = clampLimit(options.limit);
+    const rows = options.includeRequeued
+      ? listAllDeadLettersStmt.all(limit)
+      : listPendingDeadLettersStmt.all(limit);
+    return rows.map(toDeadLetterSummary);
+  }
+
+  function getDeadLetterJob(id) {
+    const row = getDeadLetterStmt.get(Number(id) || 0);
+    return row ? toDeadLetterRecord(row) : null;
+  }
+
+  function markDeadLetterRequeued(id, options = {}) {
+    const result = markDeadLetterRequeuedStmt.run(
+      Number.isFinite(Number(options.requeuedAtMs)) ? Number(options.requeuedAtMs) : Date.now(),
+      clean(options.requeuedJobId),
+      clean(options.actor) || "system",
+      Number(id) || 0,
+    );
+    return result.changes > 0;
   }
 
   function recordJobLifecycle(jobId, state, options = {}) {
@@ -455,6 +501,9 @@ function createOperationalStore(options = {}) {
     putIdempotencyRecord,
     cleanupExpiredIdempotency,
     insertDeadLetterJob,
+    listDeadLetterJobs,
+    getDeadLetterJob,
+    markDeadLetterRequeued,
     recordJobLifecycle,
     getJobLifecycle,
     recordDeliveryEvent,
@@ -545,6 +594,51 @@ function migrateSuppressionPrimaryKey(db) {
     SELECT email, tenant_id, reason, source, expires_at_ms, created_at_ms FROM ${legacyTable};
     DROP TABLE ${legacyTable};
   `);
+}
+
+function migrateDeadLetterReplayColumns(db) {
+  const columns = db.prepare("PRAGMA table_info(dead_letter_jobs)").all();
+  const names = new Set(columns.map((column) => column.name));
+  const statements = [];
+
+  if (!names.has("requeued_at_ms")) {
+    statements.push("ALTER TABLE dead_letter_jobs ADD COLUMN requeued_at_ms INTEGER");
+  }
+  if (!names.has("requeued_job_id")) {
+    statements.push("ALTER TABLE dead_letter_jobs ADD COLUMN requeued_job_id TEXT");
+  }
+  if (!names.has("requeued_by")) {
+    statements.push("ALTER TABLE dead_letter_jobs ADD COLUMN requeued_by TEXT");
+  }
+
+  for (const statement of statements) {
+    db.exec(statement);
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_dead_letter_requeued ON dead_letter_jobs(requeued_at_ms, created_at_ms)");
+}
+
+function toDeadLetterSummary(row) {
+  const job = safeJson(row.job_json);
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    tenantId: row.tenant_id,
+    smtpAccount: row.smtp_account,
+    recipients: safeJson(row.recipients_json),
+    subject: clean(job.subject),
+    reason: row.reason,
+    createdAtMs: row.created_at_ms,
+    requeuedAtMs: row.requeued_at_ms || null,
+    requeuedJobId: row.requeued_job_id || null,
+    requeuedBy: row.requeued_by || null,
+  };
+}
+
+function toDeadLetterRecord(row) {
+  return {
+    ...toDeadLetterSummary(row),
+    job: safeJson(row.job_json),
+  };
 }
 
 function normalizeEmail(value) {

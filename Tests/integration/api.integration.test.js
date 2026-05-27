@@ -291,6 +291,53 @@ describe("API integration", () => {
     assert.equal(response.status, 400);
   });
 
+  test("dead-letter retry endpoint requeues failed jobs", async () => {
+    const tokenBody = await getToken(baseUrl);
+    const subject = `DLQ retry ${Date.now()}`;
+
+    const send = await fetch(`${baseUrl}/send`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+      },
+      body: JSON.stringify({
+        to: "retry-dlq@example.com",
+        subject,
+        html: "<h1>retry me</h1>",
+      }),
+    });
+    assert.equal(send.status, 202);
+
+    const deadLetter = await waitForDeadLetter({
+      baseUrl,
+      token: tokenBody.access_token,
+      subject,
+      timeoutMs: 5000,
+    });
+
+    const retry = await fetch(`${baseUrl}/dead-letters/retry`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+      },
+      body: JSON.stringify({ ids: [deadLetter.id] }),
+    });
+    assert.equal(retry.status, 202);
+    const retryBody = await retry.json();
+    assert.equal(retryBody.retried, 1);
+    assert.equal(retryBody.failed, 0);
+
+    const listed = await fetch(`${baseUrl}/dead-letters?includeRequeued=true&limit=500`, {
+      headers: { authorization: `Bearer ${tokenBody.access_token}` },
+    });
+    assert.equal(listed.status, 200);
+    const listedBody = await listed.json();
+    const requeued = listedBody.items.find((item) => item.id === deadLetter.id);
+    assert.ok(requeued.requeuedJobId);
+  });
+
   test(
     "POST /send sends real mail and sends metrics/performance report mail",
     { skip: !MAILSEND_MODE || !REAL_MAIL_TO },
@@ -424,6 +471,25 @@ async function getHealth(baseUrl) {
     ...body,
     latencyMs,
   };
+}
+
+async function waitForDeadLetter({ baseUrl, token, subject, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`${baseUrl}/dead-letters?limit=500`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const item = body.items.find((entry) => entry.subject === subject);
+    if (item) {
+      return item;
+    }
+    await delay(100);
+  }
+
+  throw new Error(`Timed out waiting for dead-letter job with subject: ${subject}`);
 }
 
 async function sendQueuedMail({ baseUrl, token, mail, server }) {

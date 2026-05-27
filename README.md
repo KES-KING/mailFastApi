@@ -85,6 +85,7 @@ and marketing email platform:
 | Local/dev queue | Memory queue remains available for development and isolated tests |
 | Idempotency | Tenant/actor scoped idempotency records prevent duplicate queue writes |
 | Retry and DLQ | Worker retry, lifecycle states, and dead-letter persistence |
+| Failed-mail replay | DLQ listing and authenticated retry back into the queue |
 | Suppression | Global and tenant-level suppression for bounces, complaints, and unsubscribes |
 | Deliverability | SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT diagnostics and optional DKIM signing |
 | Security | JWT/API-key auth, production guard, CSRF, CSP nonce, session hardening, RBAC |
@@ -396,6 +397,22 @@ provider is under your control, the second-stage provider stress number is `1000
 API rate limits enough that MailFastApi can queue the burst. The `max-performance` profile is intended only
 for controlled provider-owned infrastructure because MB-sized payloads can generate gigabytes of real mail
 traffic quickly.
+
+Retry failed/dead-lettered mail:
+
+```bash
+# Validate pending failed jobs without queueing them.
+npm run retry:failed -- --dry-run --limit 100
+
+# Requeue the latest pending failed jobs.
+npm run retry:failed -- --limit 100
+
+# Retry specific DLQ ids. Use --force only after confirming the recipient should be retried.
+npm run retry:failed -- --ids 12,13
+```
+
+The retry flow keeps the original DLQ row for audit and marks it with the new queued job id. Hard-bounce
+and suppressed recipients are skipped unless `--force` is used.
 
 ## Log Dashboard
 

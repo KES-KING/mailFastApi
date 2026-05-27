@@ -21,7 +21,13 @@ const {
   resolveSmtpAccountName,
 } = require("./mailer");
 const { createWorker } = require("./worker");
-const { loadAuthConfig, authenticateClient, issueAccessToken, verifyJwt } = require("./auth");
+const {
+  loadAuthConfig,
+  authenticateClient,
+  issueAccessToken,
+  verifyJwt,
+  hasRequiredRole,
+} = require("./auth");
 const { createSystemStore } = require("./systemStore");
 const { createSystemLogger } = require("./systemLogger");
 const { createMailQueue } = require("./mailQueueFactory");
@@ -460,6 +466,53 @@ app.post("/send", createSendAuthMiddleware(authConfig), async (req, res, next) =
   return res.status(202).json(responseBody);
 });
 
+app.get("/dead-letters", createManagementAuthMiddleware(authConfig), (req, res) => {
+  const limit = clampInt(req.query && req.query.limit, 100, 1, 500);
+  const includeRequeued = toBoolean(req.query && req.query.includeRequeued, false);
+  const items = operationalStore.listDeadLetterJobs({ limit, includeRequeued });
+  res.status(200).json({
+    items,
+    count: items.length,
+    includeRequeued,
+  });
+});
+
+app.post("/dead-letters/retry", createManagementAuthMiddleware(authConfig), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const actor = getActor(req);
+    const ids = normalizeIntegerList(body.ids || body.id);
+    const limit = clampInt(body.limit, 100, 1, 500);
+    const force = toBoolean(body.force, false);
+    const dryRun = toBoolean(body.dryRun, false);
+    const summaries =
+      ids.length > 0
+        ? ids.map((id) => ({ id }))
+        : operationalStore.listDeadLetterJobs({ limit, includeRequeued: false });
+    const results = [];
+
+    for (const summary of summaries) {
+      const deadLetter = operationalStore.getDeadLetterJob(summary.id);
+      results.push(await requeueDeadLetter(deadLetter, { actor, force, dryRun }));
+    }
+
+    const retried = results.filter((item) => item.status === "queued").length;
+    const wouldRetry = results.filter((item) => item.status === "would_queue").length;
+    const skipped = results.filter((item) => item.status === "skipped").length;
+    const failed = results.filter((item) => item.status === "failed").length;
+    res.status(202).json({
+      status: dryRun ? "dry-run" : "processed",
+      retried,
+      wouldRetry,
+      skipped,
+      failed,
+      results,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use(handleServerError);
 if (monitorApp !== app) {
   monitorApp.use(handleServerError);
@@ -874,6 +927,45 @@ function createSendAuthMiddleware(config) {
   };
 }
 
+function createManagementAuthMiddleware(config) {
+  if (config.mode === "none") {
+    return (req, res, next) => next();
+  }
+
+  if (config.mode === "api_key") {
+    return (req, res, next) => {
+      const provided = req.header("x-api-key");
+      if (!provided || provided !== config.apiKey) {
+        return res.status(401).json({ error: "Unauthorized." });
+      }
+      return next();
+    };
+  }
+
+  return (req, res, next) => {
+    const header = req.header("authorization") || "";
+    if (!header.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing bearer token." });
+    }
+
+    const token = header.slice("Bearer ".length).trim();
+    if (!token) {
+      return res.status(401).json({ error: "Missing bearer token." });
+    }
+
+    try {
+      const payload = verifyJwt(config, token, null);
+      if (!hasRequiredRole(payload, ["admin", "operator"])) {
+        return res.status(403).json({ error: "Insufficient role." });
+      }
+      req.auth = payload;
+      return next();
+    } catch (error) {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+  };
+}
+
 function validateSendPayload(body) {
   if (!body || typeof body !== "object") {
     return { error: "Request body must be a JSON object." };
@@ -994,6 +1086,150 @@ function normalizeMailCategory(value) {
 
 function shouldApplySuppression(category) {
   return SUPPRESSION_ENABLED && SUPPRESSION_APPLIES_TO.includes(String(category || "").toLowerCase());
+}
+
+async function requeueDeadLetter(deadLetter, options = {}) {
+  if (!deadLetter) {
+    return { id: null, status: "skipped", reason: "not_found" };
+  }
+  if (deadLetter.requeuedAtMs) {
+    return { id: deadLetter.id, status: "skipped", reason: "already_requeued" };
+  }
+
+  const original = deadLetter.job && typeof deadLetter.job === "object" ? deadLetter.job : {};
+  if (!options.force && isHardFailureReason(deadLetter.reason)) {
+    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "hard_failure" };
+  }
+
+  const recipients = normalizeRecipients(original.to);
+  if (!recipients || recipients.length === 0 || !recipients.every(isValidEmail)) {
+    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "invalid_recipients" };
+  }
+  if (typeof original.subject !== "string" || original.subject.trim() === "") {
+    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "invalid_subject" };
+  }
+  if (typeof original.html !== "string" || original.html.trim() === "") {
+    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "invalid_html" };
+  }
+
+  const tenantId = normalizeTenant(original.tenantId || deadLetter.tenantId);
+  const category = normalizeMailCategory(original.category || "transactional") || "transactional";
+  const suppressed = shouldApplySuppression(category)
+    ? operationalStore.findSuppressedRecipients(recipients, tenantId)
+    : [];
+  if (suppressed.length > 0 && !options.force) {
+    return {
+      id: deadLetter.id,
+      jobId: deadLetter.jobId,
+      status: "skipped",
+      reason: "recipient_suppressed",
+      suppressed,
+    };
+  }
+
+  let smtpAccount;
+  try {
+    smtpAccount = resolveSmtpAccountName(original.smtpAccount, original.from);
+  } catch (error) {
+    return {
+      id: deadLetter.id,
+      jobId: deadLetter.jobId,
+      status: "skipped",
+      reason: error && error.code === "UNKNOWN_SMTP_ACCOUNT" ? "unknown_smtp_account" : "invalid_smtp_account",
+    };
+  }
+
+  const now = Date.now();
+  const nextJob = {
+    ...original,
+    id: crypto.randomUUID(),
+    tenantId,
+    smtpAccount,
+    to: recipients.length === 1 ? recipients[0] : recipients,
+    subject: original.subject.trim(),
+    category,
+    queuedAt: now,
+    traceId: crypto.randomUUID(),
+    retryOfJobId: original.id || deadLetter.jobId || undefined,
+    deadLetterId: deadLetter.id,
+  };
+
+  if (options.dryRun) {
+    return {
+      id: deadLetter.id,
+      jobId: deadLetter.jobId,
+      status: "would_queue",
+      dryRun: true,
+      requeuedJobId: nextJob.id,
+    };
+  }
+
+  try {
+    await queue.enqueue(nextJob);
+  } catch (error) {
+    return {
+      id: deadLetter.id,
+      jobId: deadLetter.jobId,
+      status: "failed",
+      reason: error && error.code === "QUEUE_FULL" ? "queue_full" : "queue_enqueue_failed",
+      message: error && error.message ? error.message : "Unknown queue error",
+    };
+  }
+
+  operationalStore.markDeadLetterRequeued(deadLetter.id, {
+    requeuedJobId: nextJob.id,
+    actor: options.actor || "system",
+    requeuedAtMs: now,
+  });
+  operationalStore.insertAuditEvent(options.actor || "system", "dead_letter.requeued", "mail", {
+    deadLetterId: deadLetter.id,
+    originalJobId: original.id || deadLetter.jobId,
+    requeuedJobId: nextJob.id,
+    tenantId,
+    smtpAccount,
+  });
+  operationalStore.recordJobLifecycle(nextJob.id, "queued", {
+    tenantId,
+    details: {
+      traceId: nextJob.traceId,
+      smtpAccount,
+      category,
+      retryOfJobId: original.id || deadLetter.jobId,
+      deadLetterId: deadLetter.id,
+    },
+  });
+  operationalStore.recordDeliveryEvent("queued", {
+    tenantId,
+    smtpAccount,
+    recipients,
+    jobId: nextJob.id,
+    source: "dead_letter_retry",
+    deadLetterId: deadLetter.id,
+  });
+  logger.info(
+    "dead letter requeued",
+    {
+      deadLetterId: deadLetter.id,
+      originalJobId: original.id || deadLetter.jobId,
+      requeuedJobId: nextJob.id,
+      tenantId,
+      smtpAccount,
+      queueBackend: queue.backend,
+    },
+    { traceId: nextJob.traceId, source: "api" },
+  );
+
+  return {
+    id: deadLetter.id,
+    jobId: deadLetter.jobId,
+    status: "queued",
+    requeuedJobId: nextJob.id,
+  };
+}
+
+function isHardFailureReason(value) {
+  const reason = clean(value).toLowerCase();
+  return reason === "hard_bounce" || reason.includes("hard_bounce") || reason.includes("complaint");
 }
 
 function buildUnsubscribeUrl(payload, tenantId) {
@@ -1418,6 +1654,22 @@ function listenServer(instance, port, host) {
 function toInt(value, fallback) {
   const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampInt(value, fallback, min, max) {
+  const parsed = toInt(value, fallback);
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function normalizeIntegerList(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return [
+    ...new Set(
+      raw
+        .map((item) => Number.parseInt(String(item), 10))
+        .filter((item) => Number.isInteger(item) && item > 0),
+    ),
+  ];
 }
 
 function toBoolean(value, fallback) {
