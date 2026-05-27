@@ -40,6 +40,10 @@ Screenshots below were captured from a local development run on 2026-05-27.
 
 ![MailFastApi legacy monitor mobile](./docs/assets/web-monitor-mobile.png)
 
+### Encrypted Application Settings
+
+![MailFastApi encrypted settings page](./docs/assets/web-settings.png)
+
 ## Key Features
 
 - Fast ACK pattern (`202 queued`) without waiting SMTP round-trip
@@ -66,6 +70,7 @@ Screenshots below were captured from a local development run on 2026-05-27.
   - `npm run log:mailsender`
 - Legacy web monitor at `http://localhost:8080` with SMTP account filtering
 - SMTP account management at `http://localhost:8080/smtp`
+- Encrypted application settings management at `http://localhost:8080/settings`
 
 ## Current Enterprise Scope
 
@@ -83,6 +88,7 @@ and marketing email platform:
 | Suppression | Global and tenant-level suppression for bounces, complaints, and unsubscribes |
 | Deliverability | SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT diagnostics and optional DKIM signing |
 | Security | JWT/API-key auth, production guard, CSRF, CSP nonce, session hardening, RBAC |
+| Application settings | Encrypted secure-store overrides for runtime, queue, auth, web, monitor, delivery, DKIM, logging, and updater settings |
 | MFA | Local TOTP can be enabled; development `.env` can disable it while production guard enforces safer settings |
 | Updates | Node.js updater with fast-forward flow, rollback, progress reporting, and signed-tag mode |
 | Observability | Health, Prometheus metrics, delivery events, queue depth, worker state, and legacy monitor |
@@ -200,6 +206,12 @@ On first web panel access, create the admin password. Then open `SMTP Accounts` 
 
 Prometheus metrics proxy URL (requires web login): `http://localhost:8080/metrics`
 
+Encrypted settings URL (requires admin login): `http://localhost:8080/settings`
+
+Settings saved from this page are stored in the encrypted SQLite secure store and applied when
+the relevant core or web process starts. Secret values are write-only in the browser; existing
+secret values are shown only as masked status.
+
 Formatted monitor pages:
 
 - Metrics view: `http://localhost:8080/metrics-view`
@@ -305,8 +317,8 @@ Latest local verification summary is available in:
 
 | Check | Result |
 |---|---|
-| `npm test` | 16 suites, 66 tests, 65 passed, 0 failed, 1 skipped |
-| Node syntax checks | passed for core, web, monitor, secure store, worker, updater |
+| `npm test` | 17 suites, 73 tests, 72 passed, 0 failed, 1 skipped |
+| Node syntax checks | passed for core, settings, web, monitor, secure store, worker, updater |
 | `git diff --check` | passed |
 | Web visual smoke | Playwright screenshots captured under `docs/assets/` |
 | Autocannon load smoke | HTTP `202` responses recorded; no non-2xx status bucket reported; avg latency 7.15 ms |

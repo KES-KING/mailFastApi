@@ -16,6 +16,7 @@ const DEFAULT_ACCOUNT_SETTING = "smtp_default_account";
 const ADMIN_PASSWORD_SETTING = "password";
 const ADMIN_TOTP_SETTING = "totp";
 const ADMIN_TOTP_PENDING_SETTING = "totp_pending";
+const APP_SETTINGS_SETTING = "app_settings";
 const MIN_SECRET_LENGTH = 32;
 const MIN_PASSWORD_LENGTH = 12;
 const MAX_ACCOUNT_NAME_LENGTH = 64;
@@ -159,6 +160,38 @@ function createSecureStore(options = {}) {
       ...redactSmtpAccount(account),
       isDefault: account.name === defaultName,
     }));
+  }
+
+  function getAppSettings() {
+    const record = readEncrypted(SETTINGS_NAMESPACE, APP_SETTINGS_SETTING);
+    if (!record || !record.values || typeof record.values !== "object") {
+      return {};
+    }
+    return { ...record.values };
+  }
+
+  function setAppSettings(values) {
+    if (!values || typeof values !== "object" || Array.isArray(values)) {
+      throw new Error("Application settings must be an object.");
+    }
+
+    const normalized = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (!/^[A-Z][A-Z0-9_]{1,80}$/.test(key)) {
+        const error = new Error(`Invalid application setting key: ${key}`);
+        error.code = "INVALID_APP_SETTING_KEY";
+        throw error;
+      }
+      normalized[key] = String(value === undefined || value === null ? "" : value);
+    }
+
+    writeEncrypted(SETTINGS_NAMESPACE, APP_SETTINGS_SETTING, {
+      version: 1,
+      updatedAtMs: Date.now(),
+      values: normalized,
+    });
+
+    return { ...normalized };
   }
 
   function hasAdminPassword() {
@@ -386,6 +419,8 @@ function createSecureStore(options = {}) {
     getDefaultSmtpAccountName,
     setDefaultSmtpAccountName,
     listPublicSmtpAccounts,
+    getAppSettings,
+    setAppSettings,
     hasAdminPassword,
     setAdminPassword,
     verifyAdminPassword,

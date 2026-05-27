@@ -8,6 +8,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const express = require("express");
+const { applyManagedSettingsToEnv, buildSettingsModel, parseSettingsForm } = require("./appSettings");
 
 const {
   renderMonitorPageHtml,
@@ -15,7 +16,10 @@ const {
   renderMonitorRawPageHtml,
 } = require("./monitor");
 const { createSecureStore } = require("./secureStore");
+const { createOperationalStore } = require("./operationalStore");
 const { createWebAuth } = require("./webAuth");
+
+applyManagedSettingsToEnv();
 
 const APP_ROOT = path.resolve(__dirname, "..");
 const CORE_PORT = toInt(process.env.PORT, 3000);
@@ -60,13 +64,15 @@ const WEB_UPDATE_TIMEOUT_MS = Math.max(5000, toInt(process.env.WEB_UPDATE_TIMEOU
 const WEB_UPDATE_SCRIPT = resolveSafeUpdaterPath(
   process.env.WEB_UPDATE_SCRIPT || "./scripts/updater.js",
 );
+const OPERATIONAL_DB_PATH = process.env.OPERATIONAL_DB_PATH || "data/mailfastapi-operational.sqlite";
 
 const LOGO_FILE_PATH = path.resolve(APP_ROOT, "MailFastApi_Logo.webp");
 const secureStore = createSecureStore();
+const operationalStore = createOperationalStore({ dbPath: OPERATIONAL_DB_PATH });
 const app = express();
 app.disable("x-powered-by");
 app.use(express.json({ limit: "256kb" }));
-app.use(express.urlencoded({ extended: false, limit: "64kb" }));
+app.use(express.urlencoded({ extended: false, limit: "512kb" }));
 
 const webAuth = createWebAuth({ secureStore, mfaRequired: WEB_MFA_REQUIRED });
 const updateAuth = createUpdateAuthMiddleware(WEB_UPDATE_TOKEN);
@@ -286,6 +292,7 @@ app.get(MONITOR_PATH, webAuth.requireAuth, webAuth.requireRole("admin", "operato
     cspNonce: getCspNonce(res),
     logoutPath: "/logout",
     smtpSettingsPath: "/smtp",
+    settingsPath: "/settings",
     webMfaRequired: WEB_MFA_REQUIRED,
   });
 
@@ -306,6 +313,21 @@ app.get("/smtp", webAuth.requireAuth, webAuth.requireRole("admin", "smtp-manager
   );
 });
 
+app.get("/settings", webAuth.requireAuth, webAuth.requireRole("admin"), (req, res) => {
+  const status = req.query && req.query.status ? String(req.query.status) : "";
+  const error = req.query && req.query.error ? String(req.query.error) : "";
+  res.status(200).type("html").send(
+    renderSettingsPageHtml({
+      sections: buildSettingsModel(process.env, secureStore.getAppSettings()),
+      csrfToken: webAuth.getCsrfToken(req),
+      status,
+      error,
+      fixed: getFixedSettingsRows(),
+      cspNonce: getCspNonce(res),
+    }),
+  );
+});
+
 app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, webAuth.requireRole("admin"), (req, res) => {
   res.status(200).type("html").send(
     renderUpdatePageHtml({
@@ -315,6 +337,7 @@ app.get(MONITOR_UPDATE_PAGE_PATH, webAuth.requireAuth, webAuth.requireRole("admi
       statusPath: MONITOR_UPDATE_STATUS_PATH,
       monitorPath: MONITOR_PATH,
       smtpSettingsPath: "/smtp",
+      settingsPath: "/settings",
       logoutPath: "/logout",
       cspNonce: getCspNonce(res),
     }),
@@ -345,6 +368,27 @@ app.post("/smtp/default", webAuth.requireAuth, webAuth.requireRole("admin", "smt
     res.redirect(302, "/smtp?status=default-updated");
   } catch (error) {
     res.redirect(302, `/smtp?error=${encodeURIComponent(getErrorMessage(error))}`);
+  }
+});
+
+app.post("/settings", webAuth.requireAuth, webAuth.requireRole("admin"), webAuth.requireCsrf, (req, res) => {
+  try {
+    const current = secureStore.getAppSettings();
+    const result = parseSettingsForm(req.body || {}, current, { env: process.env });
+    secureStore.setAppSettings(result.values);
+    insertAuditEvent("admin", "config.change", "app_settings", {
+      changed: result.changed,
+      cleared: result.cleared,
+      requiresRestart: true,
+    });
+    const changedCount = result.changed.length + result.cleared.length;
+    const message =
+      changedCount > 0
+        ? `saved-${changedCount}-setting-overrides-restart-required`
+        : "saved-no-changes";
+    res.redirect(302, `/settings?status=${encodeURIComponent(message)}`);
+  } catch (error) {
+    res.redirect(302, `/settings?error=${encodeURIComponent(getErrorMessage(error))}`);
   }
 });
 
@@ -626,6 +670,7 @@ async function gracefulShutdown(signal) {
   try {
     await closeServer(server);
     secureStore.close();
+    operationalStore.close();
     process.exit(0);
   } catch (error) {
     console.error(
@@ -1077,6 +1122,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
     <h1>SMTP Accounts</h1>
     <div class="nav">
       <a href="/">Monitor</a>
+      <a href="/settings">Settings</a>
       <form method="post" action="/logout">
         <input type="hidden" name="_csrf" value="${csrfToken}" />
         <button type="submit">Logout</button>
@@ -1180,6 +1226,312 @@ function renderSmtpSettingsPageHtml(options = {}) {
 </html>`;
 }
 
+function renderSettingsPageHtml(options = {}) {
+  const sections = Array.isArray(options.sections) ? options.sections : [];
+  const fixed = Array.isArray(options.fixed) ? options.fixed : [];
+  const csrfToken = escapeHtml(options.csrfToken || "");
+  const status = String(options.status || "").trim();
+  const error = String(options.error || "").trim();
+  const nonceAttr = formatNonceAttr(options.cspNonce);
+  const sectionHtml = sections.map(renderSettingsSectionHtml).join("");
+  const fixedRows = fixed.length
+    ? fixed
+        .map(
+          (row) => `<tr>
+            <td>${escapeHtml(row.name)}</td>
+            <td>${escapeHtml(row.value)}</td>
+            <td>${escapeHtml(row.note)}</td>
+          </tr>`,
+        )
+        .join("")
+    : "<tr><td colspan='3' class='empty'>No fixed runtime details.</td></tr>";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Application Settings</title>
+  <style${nonceAttr}>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      background: #dedede;
+      color: #1c1c1c;
+      padding: 10px;
+    }
+    .topbar, .panel {
+      border: 1px solid #c6cbd3;
+      background: #efefef;
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .topbar { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+    h1 { margin: 0; font-size: 20px; }
+    h2 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; }
+    h3 { margin: 0; font-size: 13px; text-transform: uppercase; }
+    p { margin: 0 0 10px; color: #444; font-size: 12px; line-height: 1.45; }
+    a, button {
+      border: 1px solid #888;
+      background: #f4f5f7;
+      color: #111;
+      text-decoration: none;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-block;
+    }
+    .primary {
+      background: #111827;
+      color: #fff;
+      border-color: #111827;
+    }
+    .nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .inline-form { margin: 0; }
+    .notice {
+      border: 1px solid #7eb26d;
+      background: #f0fff4;
+      color: #166534;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+    .error {
+      border: 1px solid #e24d42;
+      background: #fff5f5;
+      color: #991b1b;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .summary-card {
+      border: 1px solid #c6cbd3;
+      background: #f7f7f7;
+      padding: 9px;
+      min-height: 74px;
+    }
+    .summary-card .k {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: #444;
+      margin-bottom: 6px;
+    }
+    .summary-card .v {
+      font-size: 15px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .settings-section {
+      border: 1px solid #c6cbd3;
+      background: #f7f7f7;
+      margin-bottom: 10px;
+    }
+    .section-head {
+      border-bottom: 1px solid #c6cbd3;
+      background: #d9d9d9;
+      padding: 9px 10px;
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: minmax(210px, 0.9fr) minmax(260px, 1.1fr) minmax(160px, 0.7fr) minmax(150px, 0.6fr);
+      gap: 0;
+    }
+    .setting-cell {
+      border-bottom: 1px solid #ddd;
+      padding: 9px 10px;
+      min-width: 0;
+    }
+    .setting-label {
+      font-weight: 700;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .setting-key, .setting-desc, .setting-meta {
+      font-size: 11px;
+      color: #555;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+    }
+    input, select, textarea {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid #888;
+      background: #fff;
+      color: #111;
+      padding: 7px 9px;
+      font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+      font-size: 12px;
+    }
+    textarea {
+      min-height: 76px;
+      resize: vertical;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    .clear-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 11px;
+      color: #333;
+    }
+    .clear-row input { width: auto; min-height: auto; }
+    .pill {
+      display: inline-block;
+      border: 1px solid #888;
+      background: #fff;
+      padding: 3px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .pill.secure { border-color: #15803d; color: #166534; background: #f0fff4; }
+    .pill.restart { border-color: #d97706; color: #92400e; background: #fff7ed; }
+    .actions {
+      border: 1px solid #c6cbd3;
+      background: #efefef;
+      padding: 10px;
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    .table-wrap { overflow: auto; border: 1px solid #c6cbd3; background: #fff; }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; border-bottom: 1px solid #ddd; padding: 8px; vertical-align: top; }
+    th { background: #d9d9d9; text-transform: uppercase; font-size: 11px; }
+    .empty { color: #444; padding: 12px; }
+    @media (max-width: 980px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .summary-grid { grid-template-columns: 1fr; }
+      .settings-grid { grid-template-columns: 1fr; }
+      .setting-cell { border-bottom: 0; padding-bottom: 4px; }
+      .setting-cell:last-child { border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+      .actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Application Settings</h1>
+    <div class="nav">
+      <a href="/">Monitor</a>
+      <a href="/smtp">SMTP Accounts</a>
+      <a href="/update">Guncelleme Ekrani</a>
+      <form method="post" action="/logout" class="inline-form">
+        <input type="hidden" name="_csrf" value="${csrfToken}" />
+        <button type="submit">Logout</button>
+      </form>
+    </div>
+  </header>
+
+  ${status ? `<div class="notice">${escapeHtml(status)}</div>` : ""}
+  ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+
+  <section class="panel">
+    <h2>Configuration Model</h2>
+    <p>Values saved here are encrypted in the secure SQLite store and are applied when core or web processes start. Secret fields are never printed back to the browser.</p>
+    <div class="summary-grid">
+      <div class="summary-card"><div class="k">Storage</div><div class="v">encrypted SQLite</div></div>
+      <div class="summary-card"><div class="k">Apply point</div><div class="v">process startup</div></div>
+      <div class="summary-card"><div class="k">Web panel port</div><div class="v">8080 fixed</div></div>
+      <div class="summary-card"><div class="k">Safety</div><div class="v">production guard</div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Fixed Runtime Details</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Detail</th><th>Value</th><th>Note</th></tr></thead>
+        <tbody>${fixedRows}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <form method="post" action="/settings" autocomplete="off">
+    <input type="hidden" name="_csrf" value="${csrfToken}" />
+    ${sectionHtml}
+    <div class="actions">
+      <button type="submit" class="primary">Save Settings</button>
+      <a href="/">Cancel</a>
+    </div>
+  </form>
+</body>
+</html>`;
+}
+
+function renderSettingsSectionHtml(section = {}) {
+  const rows = Array.isArray(section.settings)
+    ? section.settings.map(renderSettingRowHtml).join("")
+    : "";
+  return `<section class="settings-section">
+    <div class="section-head"><h3>${escapeHtml(section.name || "Settings")}</h3></div>
+    <div class="settings-grid">${rows}</div>
+  </section>`;
+}
+
+function renderSettingRowHtml(setting = {}) {
+  const control = renderSettingControlHtml(setting);
+  const sourceClass = setting.hasPersisted ? "secure" : "";
+  return `
+    <div class="setting-cell">
+      <div class="setting-label">${escapeHtml(setting.label || setting.key)}</div>
+      <div class="setting-key">${escapeHtml(setting.key)}</div>
+      <div class="setting-desc">${escapeHtml(setting.description || "")}</div>
+    </div>
+    <div class="setting-cell">${control}</div>
+    <div class="setting-cell">
+      <span class="pill ${sourceClass}">${escapeHtml(setting.source || "-")}</span>
+      <div class="setting-meta">Effective: ${escapeHtml(setting.effectiveValue || "")}</div>
+    </div>
+    <div class="setting-cell">
+      <span class="pill restart">${escapeHtml(formatRestartTarget(setting.restart))}</span>
+      ${setting.sensitive ? '<div class="setting-meta">secret value hidden</div>' : ""}
+    </div>`;
+}
+
+function renderSettingControlHtml(setting = {}) {
+  const name = escapeHtml(setting.key || "");
+  const clearName = escapeHtml(`clear_${setting.key || ""}`);
+  const clearControl = `<label class="clear-row"><input type="checkbox" name="${clearName}" /> Use .env/default</label>`;
+
+  if (setting.type === "select") {
+    const options = (setting.options || [])
+      .map((option) => {
+        const selected = String(option) === String(setting.inputValue) ? " selected" : "";
+        return `<option value="${escapeHtml(option)}"${selected}>${escapeHtml(option)}</option>`;
+      })
+      .join("");
+    return `<select name="${name}">${options}</select>${clearControl}`;
+  }
+
+  if (setting.type === "integer") {
+    return `<input name="${name}" type="number" min="${escapeHtml(setting.min)}" max="${escapeHtml(setting.max)}" value="${escapeHtml(setting.inputValue)}" />${clearControl}`;
+  }
+
+  if (setting.type === "json") {
+    return `<textarea name="${name}" spellcheck="false">${escapeHtml(setting.inputValue)}</textarea>${clearControl}`;
+  }
+
+  if (setting.sensitive) {
+    const placeholder = setting.hasEffectiveSecret ? "Leave blank to keep existing secret" : "Enter secret value";
+    return `<input name="${name}" type="password" autocomplete="new-password" placeholder="${escapeHtml(placeholder)}" />${clearControl}`;
+  }
+
+  return `<input name="${name}" type="text" value="${escapeHtml(setting.inputValue)}" />${clearControl}`;
+}
+
 function renderUpdatePageHtml(options = {}) {
   const csrfToken = escapeHtml(options.csrfToken || "");
   const checkPath = escapeHtml(options.checkPath || MONITOR_UPDATE_CHECK_PATH);
@@ -1187,6 +1539,7 @@ function renderUpdatePageHtml(options = {}) {
   const statusPath = escapeHtml(options.statusPath || MONITOR_UPDATE_STATUS_PATH);
   const monitorPath = escapeHtml(options.monitorPath || MONITOR_PATH);
   const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
+  const settingsPath = escapeHtml(options.settingsPath || "/settings");
   const logoutPath = escapeHtml(options.logoutPath || "/logout");
   const nonceAttr = formatNonceAttr(options.cspNonce);
 
@@ -1327,6 +1680,7 @@ function renderUpdatePageHtml(options = {}) {
     <div class="nav">
       <a href="${monitorPath}">Monitor</a>
       <a href="${smtpSettingsPath}">SMTP Accounts</a>
+      <a href="${settingsPath}">Settings</a>
       <form method="post" action="${logoutPath}" class="inline-form">
         <input type="hidden" name="_csrf" value="${csrfToken}" />
         <button type="submit">Logout</button>
@@ -1620,6 +1974,55 @@ function formatAccountLimits(account = {}) {
     `rate ${account.rateLimit || "-"}/${account.rateDelta || "-"}ms`,
   ];
   return parts.join(" | ");
+}
+
+function getFixedSettingsRows() {
+  return [
+    {
+      name: "Legacy web panel port",
+      value: String(WEB_PORT),
+      note: "Fixed to 8080 so the legacy panel is always available from the root URL.",
+    },
+    {
+      name: "Legacy monitor route",
+      value: MONITOR_PATH,
+      note: "The web service exposes the monitor from the root path by design.",
+    },
+    {
+      name: "Secure store database",
+      value: secureStore.getDbPath(),
+      note: "SMTP credentials, admin auth, and managed app settings are encrypted here.",
+    },
+    {
+      name: "Operational database",
+      value: OPERATIONAL_DB_PATH,
+      note: "Audit, idempotency, suppression, lifecycle, and delivery event state.",
+    },
+    {
+      name: "Core base URL",
+      value: WEB_CORE_BASE_URL,
+      note: "Used by this web process until the web service restarts.",
+    },
+  ];
+}
+
+function formatRestartTarget(value) {
+  if (value === "core") return "core restart";
+  if (value === "web") return "web restart";
+  if (value === "both") return "core + web restart";
+  return "restart";
+}
+
+function insertAuditEvent(actor, action, target, details) {
+  try {
+    operationalStore.insertAuditEvent(actor, action, target, details);
+  } catch (error) {
+    console.error(
+      `[${new Date().toISOString()}] [web:audit] failed: ${
+        error && error.message ? error.message : "unknown"
+      }`,
+    );
+  }
 }
 
 function getErrorMessage(error) {

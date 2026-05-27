@@ -6,6 +6,9 @@ const crypto = require("node:crypto");
 const http = require("node:http");
 const path = require("node:path");
 const express = require("express");
+const { applyManagedSettingsToEnv } = require("./appSettings");
+
+applyManagedSettingsToEnv();
 
 const {
   getTransporter,

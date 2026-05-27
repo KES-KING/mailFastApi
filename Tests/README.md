@@ -22,6 +22,7 @@ Tests/
 |   |-- autocannon-send.js
 |   `-- k6-send.js
 `-- unit/
+    |-- appSettings.test.js
     |-- auth.test.js
     |-- bounceClassifier.test.js
     |-- deliveryPolicy.test.js

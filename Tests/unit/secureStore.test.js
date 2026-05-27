@@ -91,6 +91,29 @@ describe("secure store", () => {
     }
   });
 
+  test("stores managed application settings encrypted", () => {
+    const dbPath = createTempDbPath();
+    const store = createSecureStore({ dbPath, secretKey: TEST_SECRET });
+    try {
+      store.setAppSettings({
+        JWT_SECRET: "managed-jwt-secret",
+        PORT: "3100",
+      });
+
+      assert.deepEqual(store.getAppSettings(), {
+        JWT_SECRET: "managed-jwt-secret",
+        PORT: "3100",
+      });
+
+      const fileText = fs.readFileSync(dbPath, "latin1");
+      assert.equal(fileText.includes("managed-jwt-secret"), false);
+      assert.equal(fileText.includes("3100"), false);
+    } finally {
+      store.close();
+      cleanupDb(dbPath);
+    }
+  });
+
   test("enrolls TOTP MFA and consumes recovery codes once", () => {
     const dbPath = createTempDbPath();
     const store = createSecureStore({ dbPath, secretKey: TEST_SECRET });

@@ -420,6 +420,7 @@ function renderMonitorPageHtml(options = {}) {
   const csrfToken = escapeHtml(options.csrfToken || "");
   const logoutPath = escapeHtml(options.logoutPath || "/logout");
   const smtpSettingsPath = escapeHtml(options.smtpSettingsPath || "/smtp");
+  const settingsPath = escapeHtml(options.settingsPath || "/settings");
   const nonceAttr = formatNonceAttr(options.cspNonce);
   const webMfaRequired =
     options.webMfaRequired === true ? "true" : options.webMfaRequired === false ? "false" : "null";
@@ -1099,6 +1100,7 @@ function renderMonitorPageHtml(options = {}) {
         aria-label="GitHub Help"
       >?</a>
       <a class="action-btn" href="${smtpSettingsPath}">SMTP Accounts</a>
+      <a class="action-btn" href="${settingsPath}">Settings</a>
       <form method="post" action="${logoutPath}" class="inline-form">
         <input type="hidden" name="_csrf" value="${csrfToken}" />
         <button type="submit" class="action-btn">Logout</button>

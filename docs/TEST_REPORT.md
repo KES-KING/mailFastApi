@@ -27,12 +27,12 @@ Result:
 
 | Metric | Value |
 |---|---:|
-| Suites | 16 |
-| Tests | 66 |
-| Passed | 65 |
+| Suites | 17 |
+| Tests | 73 |
+| Passed | 72 |
 | Failed | 0 |
 | Skipped | 1 |
-| Duration | 3286.9878 ms |
+| Duration | 3427.19 ms |
 
 The skipped test is the explicit real SMTP send path. It is intentionally skipped unless
 `mailsend` mode and recipient SMTP test settings are provided.
@@ -43,12 +43,14 @@ Commands:
 
 ```bash
 node --check src/app.js
+node --check src/appSettings.js
 node --check src/web.js
 node --check src/monitor.js
 node --check src/secureStore.js
 node --check src/worker.js
 node --check scripts/updater.js
 node --check Tests/load/autocannon-send.js
+node --check Tests/unit/appSettings.test.js
 git diff --check
 ```
 
@@ -63,6 +65,7 @@ Screenshots were captured with Playwright CLI from local development services:
 | Legacy web login | `docs/assets/web-login.png` |
 | Monitor desktop | `docs/assets/web-monitor-desktop.png` |
 | Monitor mobile | `docs/assets/web-monitor-mobile.png` |
+| Encrypted settings | `docs/assets/web-settings.png` |
 
 Result: pass. The rendered legacy screens are nonblank and usable at desktop and mobile widths.
 
