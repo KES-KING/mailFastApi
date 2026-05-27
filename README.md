@@ -86,6 +86,7 @@ and marketing email platform:
 | Idempotency | Tenant/actor scoped idempotency records prevent duplicate queue writes |
 | Retry and DLQ | Worker retry, lifecycle states, and dead-letter persistence |
 | Failed-mail replay | DLQ listing and authenticated retry back into the queue |
+| Automatic failed retry | Worker scans pending DLQ records and requeues them up to `DLQ_AUTO_RETRY_MAX_ATTEMPTS` |
 | Suppression | Global and tenant-level suppression for bounces, complaints, and unsubscribes |
 | Deliverability | SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT diagnostics and optional DKIM signing |
 | Security | JWT/API-key auth, production guard, CSRF, CSP nonce, session hardening, RBAC |
@@ -413,6 +414,18 @@ npm run retry:failed -- --ids 12,13
 
 The retry flow keeps the original DLQ row for audit and marks it with the new queued job id. Hard-bounce
 and suppressed recipients are skipped unless `--force` is used.
+
+By default, workers also retry pending failed/dead-lettered jobs in the background:
+
+- `DLQ_AUTO_RETRY_ENABLED=true`
+- `DLQ_AUTO_RETRY_MAX_ATTEMPTS=3`
+- `DLQ_AUTO_RETRY_INTERVAL_MS=30000`
+- `DLQ_AUTO_RETRY_BATCH_SIZE=100`
+
+After the configured automatic attempts are exhausted, the DLQ row is marked as a final error and remains
+available for audit/manual review. For aggressive local/provider-owned stress runs, set
+`WORKER_RESOURCE_MODE=max` and a high `WORKER_CONCURRENCY`; actual throughput is still bounded by CPU,
+network, SQLite/Redis, SMTP pool settings, and the SMTP provider.
 
 ## Log Dashboard
 

@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const crypto = require("node:crypto");
 const http = require("node:http");
+const os = require("node:os");
 const path = require("node:path");
 const express = require("express");
 const { applyManagedSettingsToEnv } = require("./appSettings");
@@ -45,9 +46,18 @@ const {
 } = require("./monitor");
 
 const PORT = toInt(process.env.PORT, 3000);
-const WORKER_CONCURRENCY = toInt(process.env.WORKER_CONCURRENCY, 2);
+const WORKER_RESOURCE_MODE = String(process.env.WORKER_RESOURCE_MODE || "fixed").trim().toLowerCase();
+const WORKER_CONCURRENCY = resolveWorkerConcurrency(process.env);
 const RETRY_ATTEMPTS = Math.max(1, toInt(process.env.RETRY_ATTEMPTS, 3));
 const RETRY_DELAY_MS = Math.max(0, toInt(process.env.RETRY_DELAY_MS, 250));
+const DLQ_AUTO_RETRY_ENABLED = toBoolean(process.env.DLQ_AUTO_RETRY_ENABLED, true);
+const DLQ_AUTO_RETRY_MAX_ATTEMPTS = Math.max(0, toInt(process.env.DLQ_AUTO_RETRY_MAX_ATTEMPTS, 3));
+const DLQ_AUTO_RETRY_INTERVAL_MS = Math.max(1000, toInt(process.env.DLQ_AUTO_RETRY_INTERVAL_MS, 30000));
+const DLQ_AUTO_RETRY_BATCH_SIZE = Math.max(
+  1,
+  Math.min(5000, toInt(process.env.DLQ_AUTO_RETRY_BATCH_SIZE, 100)),
+);
+const DLQ_AUTO_RETRY_FORCE = toBoolean(process.env.DLQ_AUTO_RETRY_FORCE, false);
 const SHUTDOWN_TIMEOUT_MS = Math.max(1000, toInt(process.env.SHUTDOWN_TIMEOUT_MS, 20000));
 const SEND_SCOPE = "mail:send";
 const DEFAULT_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -521,6 +531,8 @@ if (monitorApp !== app) {
 const server = http.createServer(app);
 const monitorServer = MONITOR_SEPARATE_PORT ? http.createServer(monitorApp) : null;
 let isShuttingDown = false;
+let deadLetterAutoRetryTimer = null;
+let deadLetterAutoRetryRunning = false;
 
 bootstrap().catch(async (error) => {
   const message = error && error.message ? error.message : "Unknown startup error";
@@ -556,6 +568,7 @@ async function bootstrap() {
   if (ROLE_WORKER_ENABLED) {
     worker.start();
     verifyTransporters(runtimeLog);
+    startDeadLetterAutoRetry();
   }
 
   if (ROLE_API_ENABLED) {
@@ -577,6 +590,9 @@ async function bootstrap() {
     role: MAILFASTAPI_ROLE,
     metricsPath: METRICS_PATH,
     workerConcurrency: WORKER_CONCURRENCY,
+    workerResourceMode: WORKER_RESOURCE_MODE,
+    deadLetterAutoRetryEnabled: DLQ_AUTO_RETRY_ENABLED,
+    deadLetterAutoRetryMaxAttempts: DLQ_AUTO_RETRY_MAX_ATTEMPTS,
     authMode: authConfig.mode,
     queueBackend: queue.backend,
     queueMaxSize: QUEUE_MAX_SIZE,
@@ -606,6 +622,7 @@ async function gracefulShutdown(signal) {
   forceExit.unref();
 
   try {
+    stopDeadLetterAutoRetry();
     if (ROLE_API_ENABLED && monitorServer) {
       await closeServer(monitorServer);
     }
@@ -644,6 +661,85 @@ async function gracefulShutdown(signal) {
 
 function runtimeLog(level, event, details) {
   logger.log(level, event, details, { source: "runtime" });
+}
+
+function startDeadLetterAutoRetry() {
+  if (!DLQ_AUTO_RETRY_ENABLED || DLQ_AUTO_RETRY_MAX_ATTEMPTS <= 0) {
+    return;
+  }
+  if (deadLetterAutoRetryTimer) {
+    return;
+  }
+
+  logger.info("dead letter auto retry started", {
+    intervalMs: DLQ_AUTO_RETRY_INTERVAL_MS,
+    batchSize: DLQ_AUTO_RETRY_BATCH_SIZE,
+    maxAttempts: DLQ_AUTO_RETRY_MAX_ATTEMPTS,
+    force: DLQ_AUTO_RETRY_FORCE,
+  });
+
+  deadLetterAutoRetryTimer = setInterval(() => {
+    void runDeadLetterAutoRetryCycle();
+  }, DLQ_AUTO_RETRY_INTERVAL_MS);
+  if (typeof deadLetterAutoRetryTimer.unref === "function") {
+    deadLetterAutoRetryTimer.unref();
+  }
+
+  setTimeout(() => {
+    void runDeadLetterAutoRetryCycle();
+  }, Math.min(1000, DLQ_AUTO_RETRY_INTERVAL_MS)).unref();
+}
+
+function stopDeadLetterAutoRetry() {
+  if (!deadLetterAutoRetryTimer) {
+    return;
+  }
+  clearInterval(deadLetterAutoRetryTimer);
+  deadLetterAutoRetryTimer = null;
+}
+
+async function runDeadLetterAutoRetryCycle() {
+  if (deadLetterAutoRetryRunning || isShuttingDown) {
+    return;
+  }
+  deadLetterAutoRetryRunning = true;
+
+  try {
+    const pending = operationalStore.listDeadLetterJobs({
+      limit: DLQ_AUTO_RETRY_BATCH_SIZE,
+      includeRequeued: false,
+    });
+    if (pending.length === 0) {
+      return;
+    }
+
+    const results = [];
+    for (const item of pending) {
+      const deadLetter = operationalStore.getDeadLetterJob(item.id);
+      results.push(
+        await requeueDeadLetter(deadLetter, {
+          actor: "system:auto-dlq-retry",
+          auto: true,
+          force: DLQ_AUTO_RETRY_FORCE,
+          maxAutoRetries: DLQ_AUTO_RETRY_MAX_ATTEMPTS,
+        }),
+      );
+    }
+
+    logger.info("dead letter auto retry cycle", {
+      scanned: pending.length,
+      queued: results.filter((item) => item.status === "queued").length,
+      permanentError: results.filter((item) => item.status === "permanent_error").length,
+      skipped: results.filter((item) => item.status === "skipped").length,
+      failed: results.filter((item) => item.status === "failed").length,
+    });
+  } catch (error) {
+    logger.error("dead letter auto retry failed", {
+      message: error && error.message ? error.message : "Unknown DLQ retry error",
+    });
+  } finally {
+    deadLetterAutoRetryRunning = false;
+  }
 }
 
 function registerMonitorRoutes(targetApp) {
@@ -1095,21 +1191,39 @@ async function requeueDeadLetter(deadLetter, options = {}) {
   if (deadLetter.requeuedAtMs) {
     return { id: deadLetter.id, status: "skipped", reason: "already_requeued" };
   }
+  if (deadLetter.finalErrorAtMs && !options.force) {
+    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "final_error" };
+  }
 
   const original = deadLetter.job && typeof deadLetter.job === "object" ? deadLetter.job : {};
+  const autoRetryCount = Number(deadLetter.autoRetryCount || original.autoRetryCount || 0) || 0;
+  if (options.auto && autoRetryCount >= Number(options.maxAutoRetries || 0)) {
+    return markDeadLetterAsFinalError(deadLetter, {
+      actor: options.actor,
+      reason: "auto_retry_exhausted",
+      autoRetryCount,
+    });
+  }
   if (!options.force && isHardFailureReason(deadLetter.reason)) {
+    if (options.auto) {
+      return markDeadLetterAsFinalError(deadLetter, {
+        actor: options.actor,
+        reason: "hard_failure",
+        autoRetryCount,
+      });
+    }
     return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "hard_failure" };
   }
 
   const recipients = normalizeRecipients(original.to);
   if (!recipients || recipients.length === 0 || !recipients.every(isValidEmail)) {
-    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "invalid_recipients" };
+    return finishInvalidAutoOrSkip(deadLetter, options, "invalid_recipients", autoRetryCount);
   }
   if (typeof original.subject !== "string" || original.subject.trim() === "") {
-    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "invalid_subject" };
+    return finishInvalidAutoOrSkip(deadLetter, options, "invalid_subject", autoRetryCount);
   }
   if (typeof original.html !== "string" || original.html.trim() === "") {
-    return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason: "invalid_html" };
+    return finishInvalidAutoOrSkip(deadLetter, options, "invalid_html", autoRetryCount);
   }
 
   const tenantId = normalizeTenant(original.tenantId || deadLetter.tenantId);
@@ -1118,6 +1232,13 @@ async function requeueDeadLetter(deadLetter, options = {}) {
     ? operationalStore.findSuppressedRecipients(recipients, tenantId)
     : [];
   if (suppressed.length > 0 && !options.force) {
+    if (options.auto) {
+      return markDeadLetterAsFinalError(deadLetter, {
+        actor: options.actor,
+        reason: "recipient_suppressed",
+        autoRetryCount,
+      });
+    }
     return {
       id: deadLetter.id,
       jobId: deadLetter.jobId,
@@ -1131,14 +1252,15 @@ async function requeueDeadLetter(deadLetter, options = {}) {
   try {
     smtpAccount = resolveSmtpAccountName(original.smtpAccount, original.from);
   } catch (error) {
-    return {
-      id: deadLetter.id,
-      jobId: deadLetter.jobId,
-      status: "skipped",
-      reason: error && error.code === "UNKNOWN_SMTP_ACCOUNT" ? "unknown_smtp_account" : "invalid_smtp_account",
-    };
+    return finishInvalidAutoOrSkip(
+      deadLetter,
+      options,
+      error && error.code === "UNKNOWN_SMTP_ACCOUNT" ? "unknown_smtp_account" : "invalid_smtp_account",
+      autoRetryCount,
+    );
   }
 
+  const nextAutoRetryCount = options.auto ? autoRetryCount + 1 : autoRetryCount;
   const now = Date.now();
   const nextJob = {
     ...original,
@@ -1150,6 +1272,8 @@ async function requeueDeadLetter(deadLetter, options = {}) {
     category,
     queuedAt: now,
     traceId: crypto.randomUUID(),
+    autoRetryCount: nextAutoRetryCount,
+    originalJobId: original.originalJobId || original.retryOfJobId || original.id || deadLetter.jobId || undefined,
     retryOfJobId: original.id || deadLetter.jobId || undefined,
     deadLetterId: deadLetter.id,
   };
@@ -1161,6 +1285,7 @@ async function requeueDeadLetter(deadLetter, options = {}) {
       status: "would_queue",
       dryRun: true,
       requeuedJobId: nextJob.id,
+      autoRetryCount: nextAutoRetryCount,
     };
   }
 
@@ -1187,6 +1312,7 @@ async function requeueDeadLetter(deadLetter, options = {}) {
     requeuedJobId: nextJob.id,
     tenantId,
     smtpAccount,
+    autoRetryCount: nextAutoRetryCount,
   });
   operationalStore.recordJobLifecycle(nextJob.id, "queued", {
     tenantId,
@@ -1196,6 +1322,7 @@ async function requeueDeadLetter(deadLetter, options = {}) {
       category,
       retryOfJobId: original.id || deadLetter.jobId,
       deadLetterId: deadLetter.id,
+      autoRetryCount: nextAutoRetryCount,
     },
   });
   operationalStore.recordDeliveryEvent("queued", {
@@ -1205,6 +1332,7 @@ async function requeueDeadLetter(deadLetter, options = {}) {
     jobId: nextJob.id,
     source: "dead_letter_retry",
     deadLetterId: deadLetter.id,
+    autoRetryCount: nextAutoRetryCount,
   });
   logger.info(
     "dead letter requeued",
@@ -1215,6 +1343,7 @@ async function requeueDeadLetter(deadLetter, options = {}) {
       tenantId,
       smtpAccount,
       queueBackend: queue.backend,
+      autoRetryCount: nextAutoRetryCount,
     },
     { traceId: nextJob.traceId, source: "api" },
   );
@@ -1224,6 +1353,46 @@ async function requeueDeadLetter(deadLetter, options = {}) {
     jobId: deadLetter.jobId,
     status: "queued",
     requeuedJobId: nextJob.id,
+    autoRetryCount: nextAutoRetryCount,
+  };
+}
+
+function finishInvalidAutoOrSkip(deadLetter, options, reason, autoRetryCount) {
+  if (options && options.auto) {
+    return markDeadLetterAsFinalError(deadLetter, {
+      actor: options.actor,
+      reason,
+      autoRetryCount,
+    });
+  }
+  return { id: deadLetter.id, jobId: deadLetter.jobId, status: "skipped", reason };
+}
+
+function markDeadLetterAsFinalError(deadLetter, options = {}) {
+  const reason = clean(options.reason) || "auto_retry_exhausted";
+  operationalStore.markDeadLetterFinalError(deadLetter.id, { reason });
+  operationalStore.insertAuditEvent(options.actor || "system", "dead_letter.final_error", "mail", {
+    deadLetterId: deadLetter.id,
+    originalJobId: deadLetter.jobId,
+    reason,
+    autoRetryCount: Number(options.autoRetryCount || 0),
+  });
+  logger.error(
+    "dead letter final error",
+    {
+      deadLetterId: deadLetter.id,
+      originalJobId: deadLetter.jobId,
+      reason,
+      autoRetryCount: Number(options.autoRetryCount || 0),
+    },
+    { source: "worker" },
+  );
+  return {
+    id: deadLetter.id,
+    jobId: deadLetter.jobId,
+    status: "permanent_error",
+    reason,
+    autoRetryCount: Number(options.autoRetryCount || 0),
   };
 }
 
@@ -1654,6 +1823,25 @@ function listenServer(instance, port, host) {
 function toInt(value, fallback) {
   const parsed = Number.parseInt(String(value), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveWorkerConcurrency(env) {
+  const mode = String(env.WORKER_RESOURCE_MODE || "fixed").trim().toLowerCase();
+  const raw = String(env.WORKER_CONCURRENCY || "").trim().toLowerCase();
+  const autoConcurrency = Math.max(1, getAvailableParallelism() * 128);
+  if (raw === "auto" || (!raw && mode === "max")) {
+    return autoConcurrency;
+  }
+  const fallback = mode === "max" ? autoConcurrency : 2;
+  return Math.max(1, toInt(raw, fallback));
+}
+
+function getAvailableParallelism() {
+  if (typeof os.availableParallelism === "function") {
+    return os.availableParallelism();
+  }
+  const cpus = os.cpus();
+  return Array.isArray(cpus) && cpus.length > 0 ? cpus.length : 1;
 }
 
 function clampInt(value, fallback, min, max) {

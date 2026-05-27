@@ -128,6 +128,35 @@ describe("operational store", () => {
     }
   });
 
+  test("marks pending dead-letter jobs as final error", () => {
+    const store = createOperationalStore({ dbPath: createTempDbPath() });
+    try {
+      store.insertDeadLetterJob(
+        {
+          id: "job-3",
+          tenantId: "tenant_a",
+          to: ["final@example.com"],
+          smtpAccount: "default",
+          subject: "Final",
+          html: "<p>final</p>",
+          autoRetryCount: 3,
+        },
+        "smtp failed",
+      );
+
+      const pending = store.listDeadLetterJobs({ limit: 10 });
+      assert.equal(pending[0].autoRetryCount, 3);
+      assert.equal(store.markDeadLetterFinalError(pending[0].id, { reason: "auto_retry_exhausted" }), true);
+      assert.deepEqual(store.listDeadLetterJobs({ limit: 10 }), []);
+
+      const all = store.listDeadLetterJobs({ limit: 10, includeRequeued: true });
+      assert.equal(all[0].finalErrorReason, "auto_retry_exhausted");
+      assert.ok(all[0].finalErrorAtMs);
+    } finally {
+      store.close();
+    }
+  });
+
   test("records lifecycle states and delivery counters", () => {
     const store = createOperationalStore({ dbPath: createTempDbPath() });
     try {

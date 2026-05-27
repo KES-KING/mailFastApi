@@ -45,6 +45,7 @@ async function startTestServer(overrides = {}) {
     TOKEN_RATE_LIMIT_MAX: "10000",
     RETRY_ATTEMPTS: "1",
     RETRY_DELAY_MS: "10",
+    DLQ_AUTO_RETRY_ENABLED: "false",
     SECURE_STORE_KEY: TEST_SECURE_STORE_KEY,
     SECURE_STORE_DB_PATH: secureStoreDbPath,
     BOUNCE_WEBHOOK_TOKEN: "test-webhook-token",

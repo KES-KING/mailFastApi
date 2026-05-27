@@ -51,6 +51,8 @@ function createOperationalStore(options = {}) {
       requeued_at_ms INTEGER,
       requeued_job_id TEXT,
       requeued_by TEXT,
+      final_error_at_ms INTEGER,
+      final_error_reason TEXT,
       created_at_ms INTEGER NOT NULL
     );
 
@@ -164,7 +166,8 @@ function createOperationalStore(options = {}) {
   const listPendingDeadLettersStmt = db.prepare(`
     SELECT * FROM dead_letter_jobs
     WHERE requeued_at_ms IS NULL
-    ORDER BY created_at_ms DESC, id DESC
+      AND final_error_at_ms IS NULL
+    ORDER BY created_at_ms ASC, id ASC
     LIMIT ?
   `);
   const listAllDeadLettersStmt = db.prepare(`
@@ -176,7 +179,12 @@ function createOperationalStore(options = {}) {
   const markDeadLetterRequeuedStmt = db.prepare(`
     UPDATE dead_letter_jobs
     SET requeued_at_ms = ?, requeued_job_id = ?, requeued_by = ?
-    WHERE id = ? AND requeued_at_ms IS NULL
+    WHERE id = ? AND requeued_at_ms IS NULL AND final_error_at_ms IS NULL
+  `);
+  const markDeadLetterFinalErrorStmt = db.prepare(`
+    UPDATE dead_letter_jobs
+    SET final_error_at_ms = ?, final_error_reason = ?
+    WHERE id = ? AND requeued_at_ms IS NULL AND final_error_at_ms IS NULL
   `);
 
   const getLastAuditStmt = db.prepare("SELECT event_hash FROM audit_events ORDER BY id DESC LIMIT 1");
@@ -322,6 +330,15 @@ function createOperationalStore(options = {}) {
       Number.isFinite(Number(options.requeuedAtMs)) ? Number(options.requeuedAtMs) : Date.now(),
       clean(options.requeuedJobId),
       clean(options.actor) || "system",
+      Number(id) || 0,
+    );
+    return result.changes > 0;
+  }
+
+  function markDeadLetterFinalError(id, options = {}) {
+    const result = markDeadLetterFinalErrorStmt.run(
+      Number.isFinite(Number(options.finalErrorAtMs)) ? Number(options.finalErrorAtMs) : Date.now(),
+      clean(options.reason) || "auto_retry_exhausted",
       Number(id) || 0,
     );
     return result.changes > 0;
@@ -502,6 +519,7 @@ function createOperationalStore(options = {}) {
     listDeadLetterJobs,
     getDeadLetterJob,
     markDeadLetterRequeued,
+    markDeadLetterFinalError,
     recordJobLifecycle,
     getJobLifecycle,
     recordDeliveryEvent,
@@ -608,6 +626,12 @@ function migrateDeadLetterReplayColumns(db) {
   if (!names.has("requeued_by")) {
     statements.push("ALTER TABLE dead_letter_jobs ADD COLUMN requeued_by TEXT");
   }
+  if (!names.has("final_error_at_ms")) {
+    statements.push("ALTER TABLE dead_letter_jobs ADD COLUMN final_error_at_ms INTEGER");
+  }
+  if (!names.has("final_error_reason")) {
+    statements.push("ALTER TABLE dead_letter_jobs ADD COLUMN final_error_reason TEXT");
+  }
 
   for (const statement of statements) {
     db.exec(statement);
@@ -629,6 +653,9 @@ function toDeadLetterSummary(row) {
     requeuedAtMs: row.requeued_at_ms || null,
     requeuedJobId: row.requeued_job_id || null,
     requeuedBy: row.requeued_by || null,
+    finalErrorAtMs: row.final_error_at_ms || null,
+    finalErrorReason: row.final_error_reason || null,
+    autoRetryCount: getAutoRetryCount(job),
   };
 }
 
@@ -637,6 +664,14 @@ function toDeadLetterRecord(row) {
     ...toDeadLetterSummary(row),
     job: safeJson(row.job_json),
   };
+}
+
+function getAutoRetryCount(job) {
+  if (!job || typeof job !== "object") {
+    return 0;
+  }
+  const count = Number(job.autoRetryCount);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
 function normalizeEmail(value) {

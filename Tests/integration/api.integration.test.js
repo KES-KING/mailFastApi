@@ -338,6 +338,56 @@ describe("API integration", () => {
     assert.ok(requeued.requeuedJobId);
   });
 
+  test("worker auto-retries dead-letter jobs and finalizes after max attempts", async () => {
+    const autoServer = await startTestServer({
+      env: {
+        DLQ_AUTO_RETRY_ENABLED: "true",
+        DLQ_AUTO_RETRY_INTERVAL_MS: "100",
+        DLQ_AUTO_RETRY_BATCH_SIZE: "10",
+        DLQ_AUTO_RETRY_MAX_ATTEMPTS: "1",
+      },
+    });
+    try {
+      const tokenBody = await getToken(autoServer.baseUrl);
+      const subject = `Auto DLQ retry ${Date.now()}`;
+
+      const send = await fetch(`${autoServer.baseUrl}/send`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${tokenBody.access_token}`,
+        },
+        body: JSON.stringify({
+          to: "auto-dlq@example.com",
+          subject,
+          html: "<h1>auto retry me</h1>",
+        }),
+      });
+      assert.equal(send.status, 202);
+
+      const requeued = await waitForDeadLetterState({
+        baseUrl: autoServer.baseUrl,
+        token: tokenBody.access_token,
+        subject,
+        predicate: (item) => Boolean(item.requeuedJobId),
+        timeoutMs: 8000,
+      });
+      assert.equal(requeued.autoRetryCount, 0);
+
+      const finalError = await waitForDeadLetterState({
+        baseUrl: autoServer.baseUrl,
+        token: tokenBody.access_token,
+        subject,
+        predicate: (item) => Boolean(item.finalErrorAtMs),
+        timeoutMs: 8000,
+      });
+      assert.equal(finalError.finalErrorReason, "auto_retry_exhausted");
+      assert.equal(finalError.autoRetryCount, 1);
+    } finally {
+      await autoServer.stop();
+    }
+  });
+
   test(
     "POST /send sends real mail and sends metrics/performance report mail",
     { skip: !MAILSEND_MODE || !REAL_MAIL_TO },
@@ -490,6 +540,26 @@ async function waitForDeadLetter({ baseUrl, token, subject, timeoutMs }) {
   }
 
   throw new Error(`Timed out waiting for dead-letter job with subject: ${subject}`);
+}
+
+async function waitForDeadLetterState({ baseUrl, token, subject, predicate, timeoutMs }) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`${baseUrl}/dead-letters?includeRequeued=true&limit=500`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const matches = body.items.filter((entry) => entry.subject === subject);
+    const item = matches.find(predicate);
+    if (item) {
+      return item;
+    }
+    await delay(100);
+  }
+
+  throw new Error(`Timed out waiting for dead-letter state with subject: ${subject}`);
 }
 
 async function sendQueuedMail({ baseUrl, token, mail, server }) {

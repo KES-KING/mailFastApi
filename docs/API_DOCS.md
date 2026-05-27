@@ -17,6 +17,7 @@
 - Redis processing leases requeue expired jobs after `QUEUE_VISIBILITY_TIMEOUT_MS`.
 - Workers acknowledge jobs only after success or final dead-letter state.
 - Dead-lettered jobs can be listed and retried through authenticated DLQ recovery endpoints.
+- Workers automatically retry pending DLQ jobs when `DLQ_AUTO_RETRY_ENABLED=true`; exhausted rows are marked as final error.
 - API returns `202` immediately after queue write succeeds.
 
 ## Authentication Modes
