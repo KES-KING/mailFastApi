@@ -20,6 +20,16 @@ describe("delivery policy", () => {
     ]);
   });
 
+  test("uses higher corporate defaults for provider-owned systems", () => {
+    const policy = createDeliveryPolicy({ env: {}, store: null });
+    const corporate = policy.snapshot().policies.corporate;
+
+    assert.equal(corporate.perMinute, 200);
+    assert.equal(corporate.perHour, 6000);
+    assert.equal(corporate.perDay, 100000);
+    assert.equal(corporate.concurrentConnections, 10);
+  });
+
   test("blocks send when per-minute quota is exceeded", () => {
     const store = {
       countDeliveryEvents: ({ domain }) => (domain === "gmail.com" ? 60 : 0),
