@@ -5,6 +5,8 @@ const nodemailer = require("nodemailer");
 
 const { createSecureStore } = require("./secureStore");
 
+const MAX_ACCOUNT_NAME_LENGTH = 64;
+
 let secureStore;
 const transporters = new Map();
 
@@ -216,8 +218,13 @@ function normalizeSmtpAccountName(value) {
   if (!name) {
     throw new Error("SMTP account name cannot be empty.");
   }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
-    throw new Error("SMTP account names may contain only letters, numbers, underscores and dashes.");
+  if (name.length > MAX_ACCOUNT_NAME_LENGTH) {
+    throw new Error(`SMTP account names may be at most ${MAX_ACCOUNT_NAME_LENGTH} characters.`);
+  }
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} _@.+-]*$/u.test(name)) {
+    throw new Error(
+      "SMTP account names may contain only letters, numbers, spaces, underscores, dashes, dots, plus signs and @.",
+    );
   }
   return name;
 }

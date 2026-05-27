@@ -15,6 +15,7 @@ const DEFAULT_ACCOUNT_SETTING = "smtp_default_account";
 const ADMIN_PASSWORD_SETTING = "password";
 const MIN_SECRET_LENGTH = 32;
 const MIN_PASSWORD_LENGTH = 12;
+const MAX_ACCOUNT_NAME_LENGTH = 64;
 const SCRYPT_OPTIONS = Object.freeze({
   N: 32768,
   r: 8,
@@ -370,8 +371,13 @@ function normalizeAccountName(value) {
   if (!name) {
     throw new Error("SMTP account name is required.");
   }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
-    throw new Error("SMTP account names may contain only letters, numbers, underscores and dashes.");
+  if (name.length > MAX_ACCOUNT_NAME_LENGTH) {
+    throw new Error(`SMTP account names may be at most ${MAX_ACCOUNT_NAME_LENGTH} characters.`);
+  }
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} _@.+-]*$/u.test(name)) {
+    throw new Error(
+      "SMTP account names may contain only letters, numbers, spaces, underscores, dashes, dots, plus signs and @.",
+    );
   }
   return name;
 }

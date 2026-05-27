@@ -180,7 +180,7 @@ SMTP credentials are not read from `.env` in production runtime.
 1. Set `SECURE_STORE_KEY` in `.env` to a long random value.
 2. Start the web panel on `http://localhost:8080`.
 3. Create the web panel password on first access.
-4. Open `SMTP Accounts` and add accounts such as `2fa`, `info`, or `marketing`.
+4. Open `SMTP Accounts` and add accounts such as `2fa`, `info@example.com`, or `Bilgi Maili`.
 5. Set one saved account as the default.
 
 The encrypted vault is `data/mailfastapi-secure.sqlite` by default. SMTP account records are encrypted with AES-256-GCM using a key derived from `SECURE_STORE_KEY`.

@@ -116,7 +116,7 @@ Core URL (default): `http://localhost:3000`
 
 Web panel URL (fixed): `http://localhost:8080`
 
-On first web panel access, create the admin password. Then open `SMTP Accounts` and add accounts such as `2fa`, `info`, or `marketing`. Runtime mail delivery reads these accounts from the encrypted SQLite vault.
+On first web panel access, create the admin password. Then open `SMTP Accounts` and add accounts such as `2fa`, `info@example.com`, or `Bilgi Maili`. Runtime mail delivery reads these accounts from the encrypted SQLite vault.
 
 Prometheus metrics proxy URL (requires web login): `http://localhost:8080/metrics`
 

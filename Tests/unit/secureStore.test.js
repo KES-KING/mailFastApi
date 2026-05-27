@@ -39,6 +39,40 @@ describe("secure store", () => {
     }
   });
 
+  test("accepts email-like and readable SMTP account names", () => {
+    const dbPath = createTempDbPath();
+    const store = createSecureStore({ dbPath, secretKey: TEST_SECRET });
+    try {
+      store.upsertSmtpAccount({
+        name: "Info.Mail+2FA@example.com",
+        host: "smtp.example.com",
+        port: 587,
+        secure: false,
+        user: "info@example.com",
+        pass: "super-secret",
+        from: "Info <info@example.com>",
+      });
+      store.upsertSmtpAccount({
+        name: "Bilgi Maili",
+        host: "smtp.example.com",
+        port: 587,
+        secure: false,
+        user: "bilgi@example.com",
+        pass: "super-secret",
+        from: "Bilgi <bilgi@example.com>",
+      });
+
+      assert.equal(
+        store.getSmtpAccount("info.mail+2fa@example.com").name,
+        "info.mail+2fa@example.com",
+      );
+      assert.equal(store.getSmtpAccount("bilgi maili").name, "bilgi maili");
+    } finally {
+      store.close();
+      cleanupDb(dbPath);
+    }
+  });
+
   test("stores web admin password as a non-plaintext verifier", () => {
     const dbPath = createTempDbPath();
     const store = createSecureStore({ dbPath, secretKey: TEST_SECRET });

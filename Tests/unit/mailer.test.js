@@ -28,6 +28,30 @@ describe("mailer SMTP account routing", () => {
     assert.equal(resolveSmtpAccount(config, undefined, "unknown@example.com").name, "2fa");
   });
 
+  test("resolves email-like and readable explicit account names", () => {
+    const accounts = [
+      {
+        name: "info.mail+2fa@example.com",
+        identityEmails: ["info@example.com"],
+      },
+      {
+        name: "bilgi maili",
+        identityEmails: ["bilgi@example.com"],
+      },
+    ];
+    const config = {
+      accounts,
+      byName: new Map(accounts.map((account) => [account.name, account])),
+      defaultAccountName: "info.mail+2fa@example.com",
+    };
+
+    assert.equal(
+      resolveSmtpAccount(config, "Info.Mail+2FA@example.com").name,
+      "info.mail+2fa@example.com",
+    );
+    assert.equal(resolveSmtpAccount(config, "Bilgi Maili").name, "bilgi maili");
+  });
+
   test("rejects unknown explicit SMTP account", () => {
     const accounts = [{ name: "default", identityEmails: ["default@example.com"] }];
     const config = {

@@ -682,7 +682,7 @@ function renderSmtpSettingsPageHtml(options = {}) {
     <form method="post" action="/smtp/accounts" autocomplete="off">
       <input type="hidden" name="_csrf" value="${csrfToken}" />
       <div class="form-grid">
-        <div><label for="name">Account Name</label><input id="name" name="name" pattern="[A-Za-z0-9_-]+" required /></div>
+        <div><label for="name">Account Name</label><input id="name" name="name" maxlength="64" placeholder="info@example.com or 2FA Mail" required /></div>
         <div><label for="from">From</label><input id="from" name="from" placeholder="Info <info@example.com>" required /></div>
         <div><label for="host">SMTP Host</label><input id="host" name="host" required /></div>
         <div><label for="port">Port</label><input id="port" name="port" type="number" min="1" max="65535" value="587" required /></div>
