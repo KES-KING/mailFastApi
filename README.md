@@ -1,495 +1,238 @@
 # mailFastApi
 
-High-performance Node.js email microservice with split core/web architecture.
+<p align="center"><img src="./MailFastApi_Logo.webp" alt="mailFastApi logo" width="320"></p>
 
-GPLv3 community release: this project is licensed under the GNU General Public License v3.0.
-The goal is to provide an open, inspectable mail queueing, caching, delivery, and operations
-platform that the community can run, study, fork, and improve.
+[![Runtime: Node.js](https://img.shields.io/badge/runtime-Node.js-339933)](package.json)
+[![Queue: Redis](https://img.shields.io/badge/queue-Redis-DC382D)](docs/OPERATIONS.md#environment)
+[![License: Noncommercial](https://img.shields.io/badge/license-Noncommercial-orange)](LICENSE)
 
-Core design:
+**Queue email quickly. Follow each delivery attempt.**
 
-- Incoming email requests are validated, checked for idempotency/suppression, and written to Redis queue immediately.
-- Worker processes consume leased Redis jobs and deliver via pooled SMTP accounts.
-- System logs are persisted to SQLite and file logs simultaneously.
-- Monitor web panel is served by a separate web service.
-- SMTP credentials and web admin password verifier are stored in an encrypted SQLite vault.
+mailFastApi is a self-hosted **Node.js/Express** email API that separates request
+handling from SMTP delivery. Accept a message, queue it, and let background
+workers send it through pooled SMTP accounts while you follow retries, failures,
+and delivery activity in a web panel or structured logs.
 
-## Architecture
+Built for noncommercial projects, personal labs, and email-system experiments.
+The source is available under a [custom noncommercial license](LICENSE).
 
-```text
-Client -> Core API (/send, /auth/token, /health) -> Queue -> Worker -> SMTP Provider
-                                     \-> Structured Logger -> SQLite + File + Console
-Web Panel Service (:8080 root) -> Core Monitor APIs (/monitor/stats, /monitor/stream, /metrics)
-                 -> SMTP Account Manager + Secure Update Control (scripts/updater.js)
-```
+[Quick start](#quick-start) · [API reference](docs/API_DOCS.md) ·
+[Operations](docs/OPERATIONS.md) · [License](docs/LICENSING.md)
 
-## Web Panel Preview
+## What you can do
 
-The legacy web panel is served directly from the root of port `8080`.
-Screenshots below were captured from a local development run on 2026-05-27.
+| Capability | What it provides |
+| --- | --- |
+| Asynchronous delivery | `POST /send` returns `202 queued` after queue acceptance, without waiting for SMTP delivery. |
+| Redis queue | Processing leases, acknowledgements, expired-job recovery, and deferred delivery. A memory backend is available for development. |
+| Separate runtime roles | Run API and worker processes independently with `MAILFASTAPI_ROLE=api`, `worker`, or `all`. |
+| Multiple SMTP accounts | Select accounts per message, reuse Nodemailer connection pools, and manage credentials in an encrypted SQLite vault. |
+| Retry and recovery | Bounded worker retries, persisted dead-letter jobs, manual replay, and configurable automatic retries. |
+| Delivery controls | Idempotency, configurable suppression, domain/account policies, bounce and complaint ingestion, and unsubscribe support. |
+| Operations panel | Monitor queue activity, manage SMTP accounts and encrypted settings, inspect metrics, and check updates. |
+| Access controls | JWT or API-key authentication, rate limiting, panel sessions, optional TOTP MFA, and production configuration checks. |
+| Observability | Structured SQLite/JSONL logs, delivery events, Prometheus metrics, and DNS/domain-health diagnostics. |
 
-### Secure Web Login
+A `202` response means **accepted into the queue**, not delivered to the recipient.
+Redis lease recovery provides at-least-once processing; it is not an exactly-once
+delivery guarantee. SMTP acceptance also does not prove inbox placement.
 
-![MailFastApi legacy web login](./docs/assets/web-login.png)
-
-### Legacy Monitor - Desktop
-
-![MailFastApi legacy monitor desktop](./docs/assets/web-monitor-desktop.png)
-
-### Legacy Monitor - Mobile
-
-![MailFastApi legacy monitor mobile](./docs/assets/web-monitor-mobile.png)
-
-### Encrypted Application Settings
-
-![MailFastApi encrypted settings page](./docs/assets/web-settings.png)
-
-## Key Features
-
-- Fast ACK pattern (`202 queued`) without waiting SMTP round-trip
-- Redis-backed mail queue (`QUEUE_BACKEND=redis`) with processing leases, visibility timeout, and ack
-- API/worker role split with `MAILFASTAPI_ROLE=api|worker|all`
-- Production safety guard with `PRODUCTION_MODE=true`
-- Idempotency records, lifecycle states, suppression list, delivery events, dead-letter jobs, and hash-chained audit events in operational SQLite
-- Domain/account delivery policies for Gmail, Outlook, Yahoo, and corporate mail systems
-- Bounce classifier plus protected hard-bounce and complaint webhook ingestion
-- One-click unsubscribe support for marketing/bulk mail
-- Dedicated Return-Path generation and optional DKIM signing
-- SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT domain health diagnostics on the monitor API
-- Cached Nodemailer pooled transporters per SMTP account
-- Encrypted SMTP account vault (`data/mailfastapi-secure.sqlite`) protected by `SECURE_STORE_KEY`
-- First-run web panel password setup, optional TOTP MFA, session cookies, CSRF protection, and login lockout
-- Optional per-mail `smtpAccount`/`from`, multi-recipient `to`, and base64 attachments
-- Worker retry logic and latency metrics (`queueLatencyMs`, `dispatchLatencyMs`)
-- JWT auth (`/auth/token` + Bearer on `/send`) and rate limiting
-- Dual log persistence:
-  - SQLite (`LOG_DB_PATH`)
-  - JSON line file (`LOG_DIR`/`LOG_FILE_NAME`)
-- CLI log dashboard:
-  - `npm run log mailsender`
-  - `npm run log:mailsender`
-- Legacy web monitor at `http://localhost:8080` with SMTP account filtering
-- SMTP account management at `http://localhost:8080/smtp`
-- Encrypted application settings management at `http://localhost:8080/settings`
-
-## Current Enterprise Scope
-
-MailFastApi now includes the core repository controls required for a larger transactional
-and marketing email platform:
-
-| Capability | Current status |
-|---|---|
-| Multi SMTP accounts | Encrypted SQLite vault, account selection by `smtpAccount` or sender address |
-| Split API/worker runtime | `MAILFASTAPI_ROLE=api|worker|all` |
-| Durable production queue | Redis backend required by production guard |
-| Local/dev queue | Memory queue remains available for development and isolated tests |
-| Idempotency | Tenant/actor scoped idempotency records prevent duplicate queue writes |
-| Retry and DLQ | Worker retry, lifecycle states, and dead-letter persistence |
-| Failed-mail replay | DLQ listing and authenticated retry back into the queue |
-| Automatic failed retry | Worker scans pending DLQ records and requeues them up to `DLQ_AUTO_RETRY_MAX_ATTEMPTS` |
-| Suppression | Global and tenant-level suppression for bounces, complaints, and unsubscribes |
-| Deliverability | SPF/DKIM/DMARC/MX/MTA-STS/TLS-RPT diagnostics and optional DKIM signing |
-| Security | JWT/API-key auth, production guard, CSRF, CSP nonce, session hardening, RBAC |
-| Application settings | Encrypted secure-store overrides for runtime, queue, auth, web, monitor, delivery, DKIM, logging, and updater settings |
-| MFA | Local TOTP can be enabled; development `.env` can disable it while production guard enforces safer settings |
-| Updates | Node.js updater with fast-forward flow, rollback, progress reporting, and signed-tag mode |
-| Observability | Health, Prometheus metrics, delivery events, queue depth, worker state, and legacy monitor |
-
-External production controls are still required for a real enterprise deployment: private network
-or VPN access for the admin panel, TLS termination, KMS/Vault or OS secret delivery, owned DNS
-records, provider feedback-loop enrollment, signed release keys, Prometheus/Grafana deployment,
-and production-grade Redis persistence/failover.
-
-## Project Structure
+## How it works
 
 ```text
-mailFastApi/
-|-- src/
-|   |-- app.js
-|   |-- web.js
-|   |-- auth.js
-|   |-- mailQueueFactory.js
-|   |-- memoryMailQueue.js
-|   |-- redisMailQueue.js
-|   |-- mailer.js
-|   |-- operationalStore.js
-|   |-- productionGuard.js
-|   |-- domainHealth.js
-|   |-- deliveryPolicy.js
-|   |-- bounceClassifier.js
-|   |-- dkimConfig.js
-|   |-- secureStore.js
-|   |-- webAuth.js
-|   |-- queue.js
-|   |-- worker.js
-|   |-- systemLogger.js
-|   `-- systemStore.js
-|-- scripts/
-|   |-- log-cli.js
-|   `-- updater.js
-|-- docs/
-|   |-- API_DOCS.md
-|   |-- ENTERPRISE_HARDENING.md
-|   |-- TEST_REPORT.md
-|   `-- assets/
-|-- Tests/
-|-- updater.sh
-|-- .env.example
-`-- package.json
+Client -> Core API -> Redis queue -> Worker -> SMTP provider
+              |                        |
+              +---- SQLite state + structured logs
+              |
+Web panel -> Monitor APIs, SMTP accounts, settings, update controls
 ```
 
-## Environment
+The core API defaults to port `3000`; the separate web service uses port `8080`.
+SQLite stores operational records, logs, and an encrypted credential/settings
+vault. Redis handles the durable queue; its persistence and recovery policy are
+part of the deployment configuration.
 
-See `.env.example` for full reference.
+## Quick start
 
-Important variables:
+Requirements:
 
-- Queue:
-  - `QUEUE_BACKEND=redis`
-  - `REDIS_URL=redis://127.0.0.1:6379`
-  - `REDIS_QUEUE_KEY=mailfastapi:mail_jobs`
-  - `QUEUE_VISIBILITY_TIMEOUT_MS=300000`
-  - `QUEUE_RECLAIM_INTERVAL_MS=30000`
-- Runtime role:
-  - `PRODUCTION_MODE=false|true`
-  - `MAILFASTAPI_ROLE=all|api|worker`
-- Logs:
-  - `LOG_DB_PATH=data/mailfastapi.sqlite`
-  - `OPERATIONAL_DB_PATH=data/mailfastapi-operational.sqlite`
-  - `LOG_DIR=logs`
-  - `LOG_FILE_NAME=system.log`
-- Secure store:
-  - `SECURE_STORE_KEY` encrypts/decrypts `data/mailfastapi-secure.sqlite`
-  - `SECURE_STORE_KEY_FILE` can point to a mounted secret file instead of storing the key in `.env`
-  - SMTP host/user/password/from values are managed from the web panel, not `.env`
-- Send payload controls:
-  - `REQUEST_BODY_LIMIT` (default `10mb`)
-  - `MAX_ATTACHMENTS` (default `10`)
-  - `MAX_ATTACHMENT_TOTAL_BYTES` (default `8388608`)
-- Live monitor:
-  - Core service: `MONITOR_ENABLED`, `MONITOR_UI_ENABLED`, `MONITOR_PATH`, `METRICS_PATH`
-  - `MONITOR_SSE_INTERVAL_MS`, `MONITOR_TOKEN`
-  - `MONITOR_MAX_RECENT_ENTRIES`, `MONITOR_MAX_TIMELINE_MINUTES`
-- Web service:
-  - fixed legacy panel port: `8080`
-  - `WEB_HOST`, `WEB_CORE_BASE_URL`
-  - `WEB_MFA_REQUIRED=false` for development, `true` is required in production mode
-  - `WEB_SESSION_IDLE_TIMEOUT_MS`, `WEB_SESSION_ABSOLUTE_TIMEOUT_MS`
-  - `WEB_ENABLE_UPDATER`, `WEB_UPDATE_SCRIPT`, `WEB_UPDATE_TIMEOUT_MS`
-  - `WEB_UPDATE_TOKEN` (optional `x-update-token` header protection for update endpoints)
-- Updater:
-  - `UPDATER_RELEASE_MODE=branch|tag`
-  - `UPDATER_ALLOWED_TAG_PATTERN` and `UPDATER_REQUIRE_SIGNED_TAG`
-  - `UPDATER_NPM_BIN`, `UPDATER_RUN_TESTS`, `UPDATER_HEALTH_TIMEOUT_MS`, `UPDATER_LOCK_STALE_MS`
-- Delivery safety:
-  - `IDEMPOTENCY_ENABLED`, `IDEMPOTENCY_HEADER`, `IDEMPOTENCY_TTL_MS`
-  - `SUPPRESSION_ENABLED`, `SUPPRESSION_APPLIES_TO`
-  - `PUBLIC_BASE_URL`, `UNSUBSCRIBE_SECRET`
-  - `BOUNCE_WEBHOOK_ENABLED`, `BOUNCE_WEBHOOK_TOKEN`, `BOUNCE_DOMAIN`
-  - `DELIVERY_POLICY_ENABLED`, `DOMAIN_POLICIES_JSON`, `SMTP_ACCOUNT_POLICIES_JSON`
-  - `DKIM_SIGNING_ENABLED`, `DKIM_DOMAIN`, `DKIM_SELECTOR`, `DKIM_PRIVATE_KEY_PATH`
-  - `DOMAIN_HEALTH_DKIM_SELECTORS`
+- Git, npm, and Node.js with the built-in `node:sqlite` module enabled.
+- **Node.js 22.13+** for the commands below. The manifest declares 22.5.0 as its
+  minimum, but Node.js 22.5–22.12 requires `NODE_OPTIONS=--experimental-sqlite`.
+  See the [Node.js SQLite history](https://nodejs.org/api/sqlite.html).
+- An SMTP account you are authorized to use, if you want to send real mail.
+- Redis for the normal queue backend; the local walkthrough below uses memory.
 
-## Run
-
-Requires Node.js `>=22.5.0` because the encrypted vault uses the built-in `node:sqlite` module.
+There is currently no published GitHub Release. Start from the source repository:
 
 ```bash
-npm install
+git clone https://github.com/KES-KING/mailFastApi.git
+cd mailFastApi
+npm ci
+cp .env.example .env
+```
+
+Edit `.env` before starting. For a local development run, set:
+
+```dotenv
+PRODUCTION_MODE=false
+MAILFASTAPI_ROLE=all
+QUEUE_BACKEND=memory
+WEB_HOST=127.0.0.1
+```
+
+Replace `SECURE_STORE_KEY`, `JWT_SECRET`, and `AUTH_CLIENT_SECRET` with distinct
+random values, and set `MONITOR_TOKEN` and `BOUNCE_WEBHOOK_TOKEN`. Generate a
+fresh value for each secret with:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+Keep `.env` private. Keep the secure-store key with your vault backup; an existing
+encrypted vault cannot be opened with a newly generated key. The memory queue
+is for local development and loses queued jobs when its process stops.
+
+Start the two services in separate terminals from the project directory:
+
+```bash
+# Terminal 1: API and worker
 npm start core
+```
+
+```bash
+# Terminal 2: web panel
 npm start web
 ```
 
-Core URL (default): `http://localhost:3000`
+Open `http://localhost:8080`, create the initial administrator password, and add
+an account under **SMTP Accounts**. SMTP credentials are managed in the encrypted
+vault rather than in `.env`. Check the core at `http://localhost:3000/health`.
+Keep this development setup on a trusted local network; the core API has no
+loopback-only bind setting in this walkthrough.
 
-Web panel URL (fixed): `http://localhost:8080`
+For Redis, set `QUEUE_BACKEND=redis` and `REDIS_URL` to your server. For separate
+API and worker processes, use `npm start api` and `npm start worker` with shared
+queue configuration and access to the required state. Detailed environment,
+service installation, update, and recovery instructions are in the
+[operations guide](docs/OPERATIONS.md).
 
-Start targets:
+## API at a glance
 
-- `npm start` or `npm start core`: core service using the configured `MAILFASTAPI_ROLE`
-- `npm start web`: legacy web panel on fixed port `8080`
-- `npm start api`: core service with `MAILFASTAPI_ROLE=api`
-- `npm start worker`: worker process with `MAILFASTAPI_ROLE=worker`
-- `npm start all`: core service with API and worker roles
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /auth/token` | Exchange configured client credentials for a JWT in JWT mode. |
+| `POST /send` | Validate and enqueue a message using the configured authentication mode. |
+| `GET /health` | Inspect core health and queue/worker state. |
+| `GET /monitor/stats`, `GET /monitor/stream` | Read monitoring snapshots and live events. |
+| `GET /metrics` | Read Prometheus-format metrics. |
 
-On first web panel access, create the admin password. Then open `SMTP Accounts` and add accounts such as `2fa`, `info@example.com`, or `Bilgi Maili`. Runtime mail delivery reads these accounts from the encrypted SQLite vault.
+The monitor and metrics endpoints require `x-monitor-token` when
+`MONITOR_TOKEN` is set. The separate web panel authenticates with its own session
+and supplies this token when proxying core monitoring requests.
 
-Prometheus metrics proxy URL (requires web login): `http://localhost:8080/metrics`
+Example `/send` body after configuring an SMTP account:
 
-Encrypted settings URL (requires admin login): `http://localhost:8080/settings`
-
-Settings saved from this page are stored in the encrypted SQLite secure store and applied when
-the relevant core or web process starts. Secret values are write-only in the browser; existing
-secret values are shown only as masked status.
-
-Formatted monitor pages:
-
-- Metrics view: `http://localhost:8080/metrics-view`
-- Raw snapshot view: `http://localhost:8080/raw-view`
-
-## Cross-Platform Installer
-
-Project root includes a cross-platform installer entrypoint:
-
-- `installer.sh` detects Linux, macOS, or Windows Git Bash/MSYS/Cygwin and dispatches to the correct platform installer.
-- `install.sh` is the Linux systemd installer.
-- `macosinstaller.sh` is the macOS launchd installer.
-- `install.ps1` and `installer.cmd` are native Windows installers.
-
-Linux registers two systemd services:
-
-- `mailfastapi-core.service`
-- `mailfastapi-web.service`
-
-macOS registers two LaunchAgents:
-
-- `com.mailfastapi.core`
-- `com.mailfastapi.web`
-
-Windows registers two Scheduled Tasks:
-
-- `mailfastapi-core`
-- `mailfastapi-web`
-
-All installers:
-
-- creates/updates `.env` from `.env.example`
-- generates `SECURE_STORE_KEY` and `MONITOR_TOKEN` if missing/default
-- appends missing core/web settings
-- checks core/web ports
-- creates runtime directories and permissions
-- installs npm dependencies
-- runs Node syntax checks
-- enables and starts the platform service/task pair unless skipped
-
-Windows note: if Redis is not detected and `.env` is newly created, the Windows installer sets `QUEUE_BACKEND=memory` for first-run compatibility. For production, install a Redis-compatible service and switch it back to `redis`.
-
-Run installer:
-
-```bash
-chmod +x installer.sh
-./installer.sh
+```json
+{
+  "smtpAccount": "default",
+  "to": "recipient@example.com",
+  "subject": "Hello from mailFastApi",
+  "text": "A message from a noncommercial test project."
+}
 ```
 
-Native Windows:
+Requests support multiple recipients, optional sender selection, HTML, and
+base64 attachments. The [API reference](docs/API_DOCS.md) describes authentication,
+request limits, idempotency, suppression, webhook payloads, and error responses.
 
-```powershell
-.\install.ps1
-# or
-.\installer.cmd
-```
+## Web panel preview
 
-Common options:
+These existing screenshots were captured on **2026-05-27**. They illustrate that
+snapshot of the panel; they are not evidence of a fresh browser test.
+
+### Login
+
+![mailFastApi web login](./docs/assets/web-login.png)
+
+### Monitor — desktop
+
+![mailFastApi monitor desktop](./docs/assets/web-monitor-desktop.png)
+
+<details>
+<summary>Mobile monitor and encrypted application settings</summary>
+
+![mailFastApi monitor mobile](./docs/assets/web-monitor-mobile.png)
+
+![mailFastApi encrypted settings](./docs/assets/web-settings.png)
+
+</details>
+
+## Deployment boundaries
+
+The repository includes installers for Linux/systemd, macOS/launchd, and Windows
+Scheduled Tasks, plus an updater with fast-forward checks, rollback, and optional
+signed-tag verification. Their operation depends on the target platform and
+configuration; see [installers](docs/OPERATIONS.md#cross-platform-installer) and
+[updater behavior](docs/OPERATIONS.md#updater).
+
+`PRODUCTION_MODE=true` enables configuration checks. It is not a production
+acceptance certificate or a commercial-use grant. Deployments still need suitable
+TLS termination, protected admin access, secret handling, database/queue backups,
+Redis persistence, sender-domain configuration, and SMTP-provider policy checks.
+The [deployment guide](docs/ENTERPRISE_HARDENING.md) records the implemented
+controls and remaining external responsibilities. Technical support for a feature
+does not override the [noncommercial use conditions](docs/LICENSING.md).
+
+## Development and verification
 
 ```bash
-./installer.sh --service-user mailer
-./installer.sh --app-dir /opt/mailFastApi
-./installer.sh --skip-system-deps
-./installer.sh --skip-service
-./installer.sh --skip-npm
-```
-
-Installer output includes a colored ASCII banner and project GitHub link.
-
-## Updater
-
-The real updater is `scripts/updater.js`; `updater.sh` is a compatibility wrapper.
-It applies updates with a locked, fast-forward-only flow, syncs dependencies, runs syntax checks, restarts services/tasks, runs health checks, and rolls back to the previous commit if a post-merge step fails.
-
-```bash
-npm run update:check
-npm run update:apply
-
-# Compatibility wrapper
-./updater.sh --check
-./updater.sh --apply --yes
-```
-
-Release modes:
-
-- `UPDATER_RELEASE_MODE=branch` updates from the configured upstream branch.
-- `UPDATER_RELEASE_MODE=tag` updates to the latest tag matching `UPDATER_ALLOWED_TAG_PATTERN`.
-- Set `UPDATER_REQUIRE_SIGNED_TAG=true` in tag mode to require signed annotated tags.
-
-The web monitor links to the legacy `Update Control` screen. That screen checks updates without browser confirm/alert prompts and shows updater steps with a progress bar. If a service account cannot find `npm`, set `UPDATER_NPM_BIN` or let the updater use the `npm-cli.js` bundled next to the active Node.js runtime.
-
-## Tests
-
-```bash
+npm ci
 npm test
 ```
 
-Latest local verification summary is available in:
+The default suite uses isolated test state and SMTP fixtures, uses the memory
+queue, and skips the explicitly enabled real-email scenario. It does not prove
+live Redis failover, actual SMTP delivery, or inbox placement.
 
-- [docs/TEST_REPORT.md](./docs/TEST_REPORT.md)
+See [Tests/README.md](Tests/README.md) for test modes and load helpers. The
+[2026-05-27 test report](docs/TEST_REPORT.md) is historical. Real-send tests,
+load profiles, and dead-letter replay can send email; their explicit opt-in and
+recovery commands are documented in the [operations guide](docs/OPERATIONS.md#tests).
 
-2026-05-27 local report:
+## Documentation
 
-| Check | Result |
-|---|---|
-| `npm test` | 17 suites, 73 tests, 72 passed, 0 failed, 1 skipped |
-| Node syntax checks | passed for core, settings, web, monitor, secure store, worker, updater |
-| `git diff --check` | passed |
-| Web visual smoke | Playwright screenshots captured under `docs/assets/` |
-| Autocannon load smoke | HTTP `202` responses recorded; no non-2xx status bucket reported; avg latency 7.15 ms |
-| Overload dry-run | current plan calculated as 150 attempts, 20 concurrency, no real mail sent |
-
-The load smoke test uses a temporary API-only instance with the worker disabled, so it validates
-queue acceptance and API overhead without sending real email.
-
-Real SMTP test:
-
-```bash
-npm test mailsend
-```
-
-Load test templates:
-
-```bash
-k6 run Tests/load/k6-send.js
-ACCESS_TOKEN=<JWT_TOKEN> npm run test:load:autocannon
-npm run test:overload
-```
-
-Autocannon options:
-
-- `BASE_URL=http://127.0.0.1:3000`
-- `ACCESS_TOKEN=<JWT_TOKEN>`
-- `CONNECTIONS=50`
-- `DURATION=30`
-- `OVERALL_RATE=100`
-- `TEST_TO=load@example.com`
-
-The autocannon helper writes a temporary HAR file so `Authorization: Bearer <token>` is passed
-without fragile shell quoting.
-
-Real SMTP overload test:
-
-```bash
-# Plan only; no real mail is sent.
-npm run test:overload
-
-# Current local API limit profile: RATE_LIMIT_MAX=120, so default total is 150 attempts.
-OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
-
-# Provider-owned SMTP stress profile. Raise RATE_LIMIT_MAX first if API limit should not be the bottleneck.
-OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=50 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
-
-# Heavier payload test. This sends 1 MB HTML bodies through the MailFastApi endpoint.
-OVERLOAD_PROFILE=smtp-provider OVERLOAD_TOTAL=1000 OVERLOAD_CONCURRENCY=100 OVERLOAD_HTML_MB=1 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
-
-# Max-performance profile for provider-owned infrastructure.
-OVERLOAD_PROFILE=max-performance OVERLOAD_TOTAL=2000 OVERLOAD_CONCURRENCY=150 OVERLOAD_HTML_MB=2 OVERLOAD_CONFIRM_REAL_SEND=true npm run test:overload
-```
-
-Overload script behavior:
-
-- Reads auth and `TEST_MAIL_TO` from `.env`.
-- Sends through `POST /send`, not directly through Nodemailer.
-- Uses `OVERLOAD_SMTP_ACCOUNT`/`SMTP_ACCOUNT` to force a specific encrypted SMTP account.
-- Uses `OVERLOAD_HTML_MB` or `OVERLOAD_HTML_BYTES` to control the per-message HTML payload size.
-- Defaults to dry-run until `OVERLOAD_CONFIRM_REAL_SEND=true` is set.
-- Writes a JSON report under `logs/overload-report-*.json` unless `OVERLOAD_REPORT_PATH` is set.
-- Masks the test recipient in console/report target summary.
-
-With the current development `.env`, the first meaningful overload number is `150` attempts:
-`RATE_LIMIT_MAX=120` per `60000ms`, plus 25 percent headroom to verify `429` behavior. Because the SMTP
-provider is under your control, the second-stage provider stress number is `1000` attempts after increasing
-API rate limits enough that MailFastApi can queue the burst. The `max-performance` profile is intended only
-for controlled provider-owned infrastructure because MB-sized payloads can generate gigabytes of real mail
-traffic quickly.
-
-Retry failed/dead-lettered mail:
-
-```bash
-# Validate pending failed jobs without queueing them.
-npm run retry:failed -- --dry-run --limit 100
-
-# Requeue the latest pending failed jobs.
-npm run retry:failed -- --limit 100
-
-# Retry specific DLQ ids. Use --force only after confirming the recipient should be retried.
-npm run retry:failed -- --ids 12,13
-```
-
-The retry flow keeps the original DLQ row for audit and marks it with the new queued job id. Hard-bounce
-and suppressed recipients are skipped unless `--force` is used.
-
-By default, workers also retry pending failed/dead-lettered jobs in the background:
-
-- `DLQ_AUTO_RETRY_ENABLED=true`
-- `DLQ_AUTO_RETRY_MAX_ATTEMPTS=3`
-- `DLQ_AUTO_RETRY_INTERVAL_MS=30000`
-- `DLQ_AUTO_RETRY_BATCH_SIZE=100`
-
-After the configured automatic attempts are exhausted, the DLQ row is marked as a final error and remains
-available for audit/manual review. For aggressive local/provider-owned stress runs, set
-`WORKER_RESOURCE_MODE=max` and a high `WORKER_CONCURRENCY`; actual throughput is still bounded by CPU,
-network, SQLite/Redis, SMTP pool settings, and the SMTP provider.
-
-## Log Dashboard
-
-After traffic exists, render CLI dashboard:
-
-```bash
-npm run log mailsender
-```
-
-Dashboard includes:
-
-- 24h totals (`mail sent`, `mail failed`, retries)
-- event/level distributions
-- SMTP latency stats
-- per-minute throughput graph
-- recent structured logs
-
-## API
-
-Endpoint details are in:
-
-- [docs/API_DOCS.md](./docs/API_DOCS.md)
-- [docs/ENTERPRISE_HARDENING.md](./docs/ENTERPRISE_HARDENING.md)
-- [docs/TEST_REPORT.md](./docs/TEST_REPORT.md)
-
-Multi-account send example, after adding the account in the web panel:
-
-```bash
-curl -X POST http://localhost:3000/send \
-  -H "Authorization: Bearer <JWT_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d "{\"smtpAccount\":\"2fa\",\"to\":\"user@example.com\",\"subject\":\"Kod\",\"html\":\"<p>123456</p>\"}"
-```
-
-## GPL Community Distribution
-
-Before publishing a public release:
-
-- Keep `LICENSE` as GNU GPL v3.0.
-- Keep `.env`, `data/`, `logs/`, and secure SQLite vaults out of git.
-- Publish `.env.example`, docs, tests, and screenshots so users can reproduce the setup.
-- Prefer signed git tags for releases.
-- Run `npm test`, syntax checks, and at least one load smoke before tagging.
-- Do not publish real SMTP credentials, private DKIM keys, monitor tokens, updater tokens, or secure-store keys.
-
-Recommended public release flow:
-
-```bash
-npm test
-node --check src/app.js
-node --check src/web.js
-node --check src/monitor.js
-node --check src/secureStore.js
-node --check src/worker.js
-node --check scripts/updater.js
-git diff --check
-git tag -s vX.Y.Z -m "MailFastApi vX.Y.Z"
-git push origin main --tags
-```
+| Document | Contents |
+| --- | --- |
+| [API reference](docs/API_DOCS.md) | Authentication, payloads, responses, monitor endpoints, and delivery controls |
+| [Operations](docs/OPERATIONS.md) | Configuration, process roles, installers, updates, retries, and CLI logs |
+| [Deployment guide](docs/ENTERPRISE_HARDENING.md) | Implemented controls and external deployment responsibilities |
+| [Test harness](Tests/README.md) | Isolated tests, real-send opt-in, and load-test options |
+| [Historical test report](docs/TEST_REPORT.md) | Recorded results and screenshots from 2026-05-27 |
+| [License guide](docs/LICENSING.md) | Permitted use, earlier GPL versions, and contribution terms |
+| [Third-party notices](THIRD_PARTY_NOTICES.md) | Dependency licenses and redistribution notices |
 
 ## Contributing
 
-Community contributions should include tests for behavior changes and documentation for operational
-or security-sensitive features. For mail-delivery changes, include the expected impact on queueing,
-idempotency, suppression, rate limiting, and deliverability.
+Report reproducible bugs and feature requests through
+[GitHub Issues](https://github.com/KES-KING/mailFastApi/issues). Include the Node.js
+version, operating system, queue backend, expected behavior, and reproduction
+steps. Remove secrets and personal recipient/message data from shared logs.
 
+For a contribution, fork the repository, work on a separate branch, run the
+relevant tests, and open a pull request. Include tests for behavior changes and
+explain effects on queueing, retries, idempotency, suppression, or delivery.
+Contributions must be compatible with the [current license](docs/LICENSING.md#contributions).
 
+## License
+
+The project's own code and documentation use the
+[mailFastApi Noncommercial License 1.0](LICENSE). **Commercial use is prohibited
+under this license**, including internal business workflows, paid services/SaaS,
+and commercial product integration. Noncommercial use, modification, and sharing
+are subject to the full license terms.
+
+This revision is source available; it is not offered as GPL, AGPL, or OSI-approved
+open-source software. Previously granted GPL rights remain valid for earlier
+copies and code available under those terms. Third-party dependencies keep their
+own licenses. See the [license guide](docs/LICENSING.md) for the exact scope.

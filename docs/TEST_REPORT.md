@@ -2,6 +2,10 @@
 
 Generated: 2026-05-27, Europe/Istanbul
 
+> Historical report. The GPL release wording below describes that earlier snapshot.
+> Since 2026-11-15, the current project licensing is described in [LICENSING.md](LICENSING.md).
+> These recorded results do not certify subsequent commits.
+
 This report records the local verification run used for the public GPL-ready README update.
 No real SMTP delivery was triggered during the load smoke test.
 

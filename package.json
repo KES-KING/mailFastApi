@@ -1,7 +1,7 @@
 {
   "name": "mailfastapi",
   "version": "1.0.0",
-  "description": "High-performance Node.js email microservice with pooled SMTP and async queue worker",
+  "description": "Self-hosted Node.js email API with Redis delivery workers, pooled SMTP, retries and monitoring. Available for noncommercial use.",
   "main": "src/app.js",
   "type": "commonjs",
   "scripts": {
@@ -28,5 +28,24 @@
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^8.0.5",
     "redis": "^4.7.1"
-  }
+  },
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KES-KING/mailFastApi.git"
+  },
+  "homepage": "https://github.com/KES-KING/mailFastApi#readme",
+  "bugs": {
+    "url": "https://github.com/KES-KING/mailFastApi/issues"
+  },
+  "keywords": [
+    "email",
+    "smtp",
+    "mail-queue",
+    "redis",
+    "express",
+    "nodejs",
+    "monitoring",
+    "noncommercial"
+  ]
 }
